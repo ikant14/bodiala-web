@@ -14,7 +14,6 @@ import {
   saveResults,
   savedDraft,
   savedResults,
-  searchOnce,
   toQuery,
   toRequest,
   viewFromParams,
@@ -205,7 +204,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     setResults(null)
     setSearching(true)
     try {
-      const res = await searchOnce(k, () => api.searchByDestination(toRequest(c)))
+      const res = await api.searchByDestination(toRequest(c)) // shared while in flight (see api.ts)
       if (seq !== searchSeq.current) return
       saveResults(k, res)
       setResults(res)
@@ -667,7 +666,9 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         />
       )}
 
-      {view.hotel && (
+      {/* Wait for the results (restored instantly on a refresh) so the dialog loads once, already knowing
+          the hotel's supplier, instead of a cache-only call followed by a second one. */}
+      {view.hotel && results && (
         <HotelDetailDialog
           key={view.hotel}
           hotelId={view.hotel}

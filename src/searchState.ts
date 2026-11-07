@@ -159,15 +159,3 @@ export const saveDraft = (d: SearchCriteria) => write(DRAFT_KEY, d)
 /** Where the "Search" tab goes back to: the last search page visited in this tab. */
 export const lastSearchHref = () => '/' + (read<string>(LAST_SEARCH_KEY) ?? '')
 export const rememberLastSearch = (search: string) => write(LAST_SEARCH_KEY, search)
-
-// One request per search even when React StrictMode runs the loading effect twice in development.
-const inflight = new Map<string, Promise<CombinedSearchResult>>()
-
-export function searchOnce(key: string, run: () => Promise<CombinedSearchResult>): Promise<CombinedSearchResult> {
-  let p = inflight.get(key)
-  if (!p) {
-    p = run().finally(() => inflight.delete(key))
-    inflight.set(key, p)
-  }
-  return p
-}
