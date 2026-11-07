@@ -3,6 +3,12 @@ import { ApiError, api } from '../api'
 import type { BookingView } from '../types'
 import { IconSpinner } from '../icons'
 
+/** Today's local date as yyyy-MM-dd, comparable with the bookings' arrival dates. */
+function localToday(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const money = (v: string, currency: string) =>
   `${currency} ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -11,6 +17,7 @@ export default function BookingsView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState<string | null>(null)
+  const today = localToday()
 
   function load() {
     setLoading(true)
@@ -73,6 +80,8 @@ export default function BookingsView() {
           <tbody>
             {bookings.map((b) => {
               const cancelled = b.status?.toLowerCase() === 'cancelled'
+              // A stay that already started can't be cancelled at the supplier; don't offer it.
+              const past = b.arrivalDate < today
               return (
                 <tr key={b.id} className={cancelled ? 'row-cancelled' : ''}>
                   <td>
@@ -89,7 +98,8 @@ export default function BookingsView() {
                     <span className={`badge ${cancelled ? 'grey' : 'green'}`}>{b.status}</span>
                   </td>
                   <td style={{ textAlign: 'right' }}>
-                    {!cancelled && (
+                    {!cancelled && past && <span className="muted">Past stay</span>}
+                    {!cancelled && !past && (
                       <button
                         className="btn small danger"
                         disabled={cancelling === b.bookingId}
