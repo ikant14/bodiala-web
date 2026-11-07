@@ -64,7 +64,7 @@ const SORT_LABEL: Record<SortKey, string> = {
   top: 'Suggested',
   price: 'Price (lowest first)',
   'price-desc': 'Price (highest first)',
-  stars: 'Category (high to low)',
+  stars: 'Stars', // 5★ first; cheapest first within the same stars
 }
 
 const errorText = (e: unknown) =>
@@ -541,8 +541,8 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                     ))}
                   </div>
                 )}
-                <div className="filter-group" role="group" aria-label="Category">
-                  <h4>Category</h4>
+                <div className="filter-group" role="group" aria-label="Stars">
+                  <h4>Stars</h4>
                   <div className="star-toggles">
                     {options.stars.map(({ value, count: n }) => {
                       const on = view.stars.includes(value)
