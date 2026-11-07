@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import SearchView from './components/SearchView'
 import BookingsView from './components/BookingsView'
 import { IconMoon, IconSparkle, IconSun } from './icons'
+import { lastSearchHref } from './searchState'
 
-type Tab = 'search' | 'bookings'
 type Theme = 'light' | 'dark'
 
 function initialTheme(): Theme {
@@ -12,20 +13,17 @@ function initialTheme(): Theme {
   return 'light' // bright by default; toggle in the header switches to dark
 }
 
+const tabClass = ({ isActive }: { isActive: boolean }) => (isActive ? 'active' : '')
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('search')
-  const [bookingsKey, setBookingsKey] = useState(0)
   const [theme, setTheme] = useState<Theme>(initialTheme)
+  const navigate = useNavigate()
+  useLocation() // re-render on navigation, so the Search tab always links back to the latest search
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('theme', theme)
   }, [theme])
-
-  function handleBooked() {
-    setBookingsKey((k) => k + 1)
-    setTab('bookings')
-  }
 
   return (
     <div className="app">
@@ -42,12 +40,12 @@ export default function App() {
 
         <div className="header-right">
           <nav className="tabs">
-            <button className={tab === 'search' ? 'active' : ''} onClick={() => setTab('search')}>
+            <NavLink to={lastSearchHref()} end className={tabClass}>
               Search
-            </button>
-            <button className={tab === 'bookings' ? 'active' : ''} onClick={() => setTab('bookings')}>
+            </NavLink>
+            <NavLink to="/bookings" className={tabClass}>
               My bookings
-            </button>
+            </NavLink>
           </nav>
           <button
             className="theme-toggle"
@@ -61,11 +59,11 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        {tab === 'search' ? (
-          <SearchView onBooked={handleBooked} />
-        ) : (
-          <BookingsView key={bookingsKey} />
-        )}
+        <Routes>
+          <Route path="/" element={<SearchView onBooked={() => navigate('/bookings')} />} />
+          <Route path="/bookings" element={<BookingsView />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
 
       <footer className="app-footer">

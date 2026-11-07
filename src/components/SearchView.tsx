@@ -1,6 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api'
 import type { City, CombinedSearchResult, Country, FoundHotel, Provider } from '../types'
+import {
+  type SearchCriteria,
+  criteriaFromParams,
+  criteriaKey,
+  pageFromParams,
+  rememberLastSearch,
+  saveDraft,
+  saveResults,
+  savedDraft,
+  savedResults,
+  searchOnce,
+  toQuery,
+  toRequest,
+} from '../searchState'
 import BookHotelDialog, { type SearchContext } from './BookHotelDialog'
 import HotelDetailDialog from './HotelDetailDialog'
 import {
@@ -67,24 +82,43 @@ const money = (v: string, currency: string) =>
 // grid stays light.
 const PAGE_SIZE = 12
 
+// Restored results older than this get a "Refresh prices" prompt — restoring never searches by itself.
+const STALE_AFTER_MS = 30 * 60 * 1000
+
+const errorText = (e: unknown) =>
+  e instanceof ApiError ? `${e.status ? e.status + ' · ' : ''}${e.message}` : String(e)
+
 export default function SearchView({ onBooked }: { onBooked: () => void }) {
+  // The URL is the source of truth for the submitted search, the results page and the open hotel, so a
+  // refresh, Back/Forward or a pasted link lands on the same view.
+  const [searchParams] = useSearchParams()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const criteria = useMemo(() => criteriaFromParams(searchParams), [searchParams])
+  const key = criteria ? criteriaKey(criteria) : ''
+  const page = pageFromParams(searchParams)
+  const detailId = searchParams.get('hotel')
+
+  // The form is a draft: it starts from the URL's search (or the last unsubmitted draft in this tab).
+  const [initial] = useState(() => criteria ?? savedDraft())
   const [countries, setCountries] = useState<Country[]>([])
   const [cities, setCities] = useState<City[]>([])
-  const [country, setCountry] = useState('')
-  const [selectedCities, setSelectedCities] = useState<string[]>([])
-  const [arrival, setArrival] = useState(isoDate(7))
-  const [departure, setDeparture] = useState(isoDate(8))
-  const [adults, setAdults] = useState(2)
-  const [children, setChildren] = useState(0)
-  const [ratings, setRatings] = useState<number[]>([])
+  const [country, setCountry] = useState(initial?.country ?? '')
+  const [selectedCities, setSelectedCities] = useState<string[]>(initial?.cities ?? [])
+  const [arrival, setArrival] = useState(initial?.arrival ?? isoDate(7))
+  const [departure, setDeparture] = useState(initial?.departure ?? isoDate(8))
+  const [adults, setAdults] = useState(initial?.adults ?? 2)
+  const [children, setChildren] = useState(initial?.children ?? 0)
+  const [ratings, setRatings] = useState<number[]>(initial?.stars ?? [])
 
   const [results, setResults] = useState<CombinedSearchResult | null>(null)
+  const [resultsAt, setResultsAt] = useState(0)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [booking, setBooking] = useState<{ hotel: FoundHotel; ctx: SearchContext } | null>(null)
-  const [detail, setDetail] = useState<{ id: string; name: string; provider: Provider } | null>(null)
-  const [page, setPage] = useState(0)
   const resultsRef = useRef<HTMLDivElement>(null)
+  const searchSeq = useRef(0) // ignores a response once a newer search has started
+  const freshNext = useRef(false) // the next URL-driven load is a user search: skip saved results
 
   useEffect(() => {
     api.countries()
@@ -93,13 +127,68 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   }, [])
 
   useEffect(() => {
-    setSelectedCities([])
     setCities([])
     if (!country) return
     api.cities(country)
       .then(setCities)
       .catch((e: ApiError) => setError(e.message))
   }, [country])
+
+  useEffect(() => {
+    saveDraft({ country, cities: selectedCities, arrival, departure, adults, children, stars: ratings })
+  }, [country, selectedCities, arrival, departure, adults, children, ratings])
+
+  useEffect(() => rememberLastSearch(location.search), [location.search])
+
+  // Show a search's results: the ones saved in this tab when there are any (refresh, Back, Search tab —
+  // no supplier quota spent), otherwise run it.
+  const loadResults = useCallback(async (c: SearchCriteria, fresh: boolean) => {
+    const k = criteriaKey(c)
+    const saved = fresh ? null : savedResults(k)
+    const seq = ++searchSeq.current
+    setError(null)
+    if (saved) {
+      setResults(saved.results)
+      setResultsAt(saved.savedAt)
+      setSearching(false)
+      return
+    }
+    setResults(null)
+    setSearching(true)
+    try {
+      const res = await searchOnce(k, () => api.searchByDestination(toRequest(c)))
+      if (seq !== searchSeq.current) return
+      saveResults(k, res)
+      setResults(res)
+      setResultsAt(Date.now())
+    } catch (e) {
+      if (seq === searchSeq.current) setError(errorText(e))
+    } finally {
+      if (seq === searchSeq.current) setSearching(false)
+    }
+  }, [])
+
+  // Whenever the URL's search changes (new search, Back/Forward, refresh) load it and mirror it in the form.
+  useEffect(() => {
+    if (!criteria) {
+      searchSeq.current++
+      setResults(null)
+      setSearching(false)
+      return
+    }
+    setCountry(criteria.country)
+    setSelectedCities(criteria.cities)
+    setArrival(criteria.arrival)
+    setDeparture(criteria.departure)
+    setAdults(criteria.adults)
+    setChildren(criteria.children)
+    setRatings(criteria.stars)
+    const fresh = freshNext.current
+    freshNext.current = false
+    loadResults(criteria, fresh)
+    // `key` identifies `criteria`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, loadResults])
 
   // Map a destination code to its display name (falls back to the code). Used for the selected-city
   // chips and to label each result hotel by its own city in a multi-city search.
@@ -109,49 +198,60 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   }, [cities])
   const canSearch = country && selectedCities.length > 0 && arrival && departure && !searching
 
-  async function doSearch() {
-    setError(null)
-    setResults(null)
-    setSearching(true)
-    try {
-      const res = await api.searchByDestination({
-        arrivalDate: arrival,
-        departureDate: departure,
-        countryCode: country,
-        cities: selectedCities,
-        guestNationality: country,
-        hotelRatings: ratings.length ? [...ratings].sort() : undefined,
-        rooms: [{ type: 'Room-1', noOfAdults: adults, noOfChilds: children }],
-      })
-      setResults(res)
-      setPage(0)
-    } catch (e) {
-      setError(e instanceof ApiError ? `${e.status ? e.status + ' · ' : ''}${e.message}` : String(e))
-    } finally {
-      setSearching(false)
+  // Submitting puts the search in the URL (a new history entry), which loads it — always fresh from the
+  // supplier. Re-submitting the search already shown refreshes its prices in place.
+  function doSearch() {
+    const c: SearchCriteria = {
+      country,
+      cities: selectedCities,
+      arrival,
+      departure,
+      adults,
+      children,
+      stars: [...ratings].sort(),
+    }
+    if (criteria && criteriaKey(c) === key) {
+      navigate({ search: toQuery(c) }, { replace: true }) // back to page 1, details closed
+      loadResults(c, true)
+    } else {
+      freshNext.current = true
+      navigate({ search: toQuery(c) })
     }
   }
 
+  const goToPage = (p: number) => criteria && navigate({ search: toQuery(criteria, { page: p }) })
+
+  // Details are part of the URL too: Back closes them, a refresh keeps them open.
+  const openDetail = (h: FoundHotel) =>
+    criteria && navigate({ search: toQuery(criteria, { page, hotel: h.id }) }, { state: { detailFromResults: true } })
+  const closeDetail = () => {
+    if ((location.state as { detailFromResults?: boolean } | null)?.detailFromResults) navigate(-1)
+    else if (criteria) navigate({ search: toQuery(criteria, { page }) }, { replace: true })
+  }
+
   // Booking context is built per hotel: each carries its own supplier + session + currency, so the
-  // prebook/book routes back to the supplier that returned it.
-  const ctxFor = (h: FoundHotel): SearchContext => ({
+  // prebook/book routes back to the supplier that returned it. Dates/guests come from the search that
+  // produced the results, not from the (possibly edited) form.
+  const ctxFor = (h: FoundHotel, c: SearchCriteria): SearchContext => ({
     provider: h.provider,
     searchSessionId: h.searchSessionId,
     currency: h.currency,
-    arrivalDate: arrival,
-    departureDate: departure,
-    countryCode: country,
+    arrivalDate: c.arrival,
+    departureDate: c.departure,
+    countryCode: c.country,
     city: h.city, // each hotel books against its own city (results can span several)
     cityName: cityNameOf(h.city),
-    guestNationality: country,
-    adults,
-    children,
+    guestNationality: c.country,
+    adults: c.adults,
+    children: c.children,
   })
 
   const totalHotels = results?.hotels.length ?? 0
   const pageCount = Math.max(1, Math.ceil(totalHotels / PAGE_SIZE))
   const safePage = Math.min(page, pageCount - 1)
   const pageHotels = results ? results.hotels.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE) : []
+  const detailHotel = detailId ? results?.hotels.find((h) => h.id === detailId) : undefined
+  const stale = results != null && Date.now() - resultsAt > STALE_AFTER_MS
 
   // Search results only carry photos for hotels already in the cache. For the rest, fetch covers for
   // the cards on the current page only (one batched backend call → at most one Hotelbeds request per
@@ -183,8 +283,12 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results, safePage])
 
-  // Bring the results back into view when paging through a long list.
+  // Bring the results back into view when paging through a long list (not on first load: a refresh
+  // keeps the browser's own scroll position).
+  const pageSeen = useRef(page)
   useEffect(() => {
+    if (page === pageSeen.current) return
+    pageSeen.current = page
     if (results) resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page])
@@ -204,7 +308,13 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
             <label>
               <IconGlobe size={14} /> Country
             </label>
-            <select value={country} onChange={(e) => setCountry(e.target.value)}>
+            <select
+              value={country}
+              onChange={(e) => {
+                setCountry(e.target.value)
+                setSelectedCities([]) // cities belong to the previous country
+              }}
+            >
               <option value="">Select a country…</option>
               {countries.map((c) => (
                 <option key={c.countryCode} value={c.countryCode}>
@@ -329,12 +439,12 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
 
       {error && !searching && <div className="alert error">{error}</div>}
 
-      {results && !searching && (
+      {results && criteria && !searching && (
         <section className="results" ref={resultsRef}>
           <div className="results-head">
             <h2>
               {results.hotels.length} hotel{results.hotels.length === 1 ? '' : 's'} in{' '}
-              {selectedCities.map(cityNameOf).join(', ')}
+              {criteria.cities.map(cityNameOf).join(', ')}
               {pageCount > 1 && (
                 <span className="muted" style={{ fontSize: 14, fontWeight: 500 }}>
                   {' '}
@@ -343,9 +453,21 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
               )}
             </h2>
             <span className="pill">
-              <IconCalendar size={13} /> {arrival} → {departure}
+              <IconCalendar size={13} /> {criteria.arrival} → {criteria.departure}
             </span>
           </div>
+
+          {stale && (
+            <div className="alert" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+              <span>
+                Prices from {new Date(resultsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} —
+                availability may have changed.
+              </span>
+              <button className="btn" onClick={() => loadResults(criteria, true)}>
+                Refresh prices
+              </button>
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '4px 0 16px' }}>
             {results.providerStatus.map((s) => (
@@ -424,12 +546,12 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                         ))}
                       </ul>
                       <div className="card-actions">
-                        <button className="btn" onClick={() => setDetail({ id: h.id, name: h.name, provider: h.provider })}>
+                        <button className="btn" onClick={() => openDetail(h)}>
                           <IconInfo size={15} /> Details
                         </button>
                         <button
                           className="btn primary"
-                          onClick={() => setBooking({ hotel: h, ctx: ctxFor(h) })}
+                          onClick={() => setBooking({ hotel: h, ctx: ctxFor(h, criteria) })}
                         >
                           Book now
                         </button>
@@ -444,13 +566,13 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                 className="pager"
                 style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 14, marginTop: 24 }}
               >
-                <button className="btn" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
+                <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
                   ‹ Prev
                 </button>
                 <span className="muted">
                   Page {safePage + 1} of {pageCount}
                 </span>
-                <button className="btn" disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)}>
+                <button className="btn" disabled={safePage >= pageCount - 1} onClick={() => goToPage(safePage + 1)}>
                   Next ›
                 </button>
               </div>
@@ -472,12 +594,13 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         />
       )}
 
-      {detail && (
+      {detailId && (
         <HotelDetailDialog
-          hotelId={detail.id}
-          hotelName={detail.name}
-          provider={detail.provider}
-          onClose={() => setDetail(null)}
+          key={detailId}
+          hotelId={detailId}
+          hotelName={detailHotel?.name ?? ''}
+          provider={detailHotel?.provider}
+          onClose={closeDetail}
         />
       )}
     </div>

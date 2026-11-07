@@ -151,7 +151,7 @@ body {
   padding: 4px;
 }
 
-.tabs button {
+.tabs a {
   border: none;
   background: transparent;
   color: var(--text-2);
@@ -161,14 +161,15 @@ body {
   font: inherit;
   font-size: 14px;
   font-weight: 600;
+  text-decoration: none;
   transition: all 0.18s ease;
 }
 
-.tabs button:hover {
+.tabs a:hover {
   color: var(--text);
 }
 
-.tabs button.active {
+.tabs a.active {
   background: var(--primary);
   color: #fff;
   box-shadow: 0 5px 14px color-mix(in srgb, var(--primary) 32%, transparent);
