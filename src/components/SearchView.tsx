@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api'
-import type { City, CombinedSearchResult, Country, FoundHotel, Provider } from '../types'
+import type { City, CombinedSearchResult, Country, FoundHotel, Provider, RoomDetail } from '../types'
 import {
+  type ResultsView,
   type SearchCriteria,
+  type SortKey,
   criteriaFromParams,
   criteriaKey,
-  pageFromParams,
+  nights,
   rememberLastSearch,
   saveDraft,
   saveResults,
@@ -15,21 +17,12 @@ import {
   searchOnce,
   toQuery,
   toRequest,
+  viewFromParams,
 } from '../searchState'
+import { tidy } from '../format'
 import BookHotelDialog, { type SearchContext } from './BookHotelDialog'
 import HotelDetailDialog from './HotelDetailDialog'
-import {
-  IconBed,
-  IconCalendar,
-  IconClose,
-  IconGlobe,
-  IconInfo,
-  IconPin,
-  IconSearch,
-  IconSpinner,
-  IconStar,
-  IconUsers,
-} from '../icons'
+import { IconCalendar, IconClose, IconGlobe, IconPin, IconSearch, IconSpinner, IconStar, IconUsers } from '../icons'
 
 function isoDate(daysFromNow: number): string {
   const d = new Date()
@@ -55,49 +48,106 @@ function bannerFor(key: string): string {
 }
 
 const PROVIDER_LABEL: Record<Provider, string> = { REZLIVE: 'RezLive', HOTELBEDS: 'Hotelbeds' }
-const PROVIDER_COLOR: Record<Provider, string> = { REZLIVE: '#6366f1', HOTELBEDS: '#0ea5e9' }
-
-function ProviderBadge({ provider }: { provider: Provider }) {
-  return (
-    <span
-      style={{
-        background: PROVIDER_COLOR[provider],
-        color: '#fff',
-        fontSize: 11,
-        fontWeight: 600,
-        padding: '2px 8px',
-        borderRadius: 999,
-        letterSpacing: 0.2,
-      }}
-    >
-      {PROVIDER_LABEL[provider]}
-    </span>
-  )
-}
-
-const money = (v: string, currency: string) =>
-  `${currency} ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 // Availability can return many hotels (a busy destination is 50+); render one page at a time so the
-// grid stays light.
+// list stays light.
 const PAGE_SIZE = 12
 
 // Restored results older than this get a "Refresh prices" prompt — restoring never searches by itself.
 const STALE_AFTER_MS = 30 * 60 * 1000
 
+const SORT_LABEL: Record<SortKey, string> = {
+  top: 'Our top picks',
+  price: 'Price (lowest first)',
+  'price-desc': 'Price (highest first)',
+  stars: 'Property rating (high to low)',
+}
+
 const errorText = (e: unknown) =>
   e instanceof ApiError ? `${e.status ? e.status + ' · ' : ''}${e.message}` : String(e)
 
+const roomPrice = (r: RoomDetail) => Number(r.totalRate.split('|')[0])
+
+/** Star rating from the supplier's category ("4", "4EST" …); 0 when unknown. */
+const starsOf = (h: FoundHotel) => parseInt(h.rating, 10) || 0
+
+const wholeMoney = (v: number, currency: string) =>
+  `${currency} ${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+const shortDate = (iso: string) =>
+  new Date(iso + 'T00:00:00Z').toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  })
+
+/** One result row: the hotel and the offer it's shown with — its cheapest room on the chosen meal plans. */
+interface Row {
+  hotel: FoundHotel
+  room: RoomDetail
+  price: number
+}
+
+function cheapestRoom(h: FoundHotel, meals: string[]): RoomDetail | undefined {
+  let best: RoomDetail | undefined
+  for (const r of h.roomDetails) {
+    if (meals.length && !meals.includes(r.boardBasis)) continue
+    if (!best || roomPrice(r) < roomPrice(best)) best = r
+  }
+  return best
+}
+
+/** The sidebar filters and the sort, applied in the browser — never a supplier call. */
+function arrange(hotels: FoundHotel[], view: ResultsView): Row[] {
+  const rows: Row[] = []
+  for (const hotel of hotels) {
+    if (view.stars.length && !view.stars.includes(starsOf(hotel))) continue
+    const room = cheapestRoom(hotel, view.meals)
+    if (room) rows.push({ hotel, room, price: roomPrice(room) })
+  }
+  switch (view.sort) {
+    case 'price':
+      return rows.sort((a, b) => a.price - b.price)
+    case 'price-desc':
+      return rows.sort((a, b) => b.price - a.price)
+    case 'stars':
+      return rows.sort((a, b) => starsOf(b.hotel) - starsOf(a.hotel) || a.price - b.price)
+    default:
+      return rows // supplier order
+  }
+}
+
+/** Filter options, each with how many hotels in the results have it. */
+function facets(hotels: FoundHotel[]) {
+  const stars = new Map<number, number>()
+  const meals = new Map<string, number>()
+  for (const h of hotels) {
+    const s = starsOf(h)
+    if (s) stars.set(s, (stars.get(s) ?? 0) + 1)
+    for (const m of new Set(h.roomDetails.map((r) => r.boardBasis).filter(Boolean))) {
+      meals.set(m, (meals.get(m) ?? 0) + 1)
+    }
+  }
+  return {
+    stars: [5, 4, 3, 2, 1].filter((s) => stars.has(s)).map((s) => ({ value: s, count: stars.get(s)! })),
+    meals: [...meals.entries()].sort((a, b) => b[1] - a[1]).map(([value, n]) => ({ value, count: n })),
+  }
+}
+
+const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
+
 export default function SearchView({ onBooked }: { onBooked: () => void }) {
-  // The URL is the source of truth for the submitted search, the results page and the open hotel, so a
-  // refresh, Back/Forward or a pasted link lands on the same view.
+  // The URL is the source of truth for the submitted search and how its results are shown (filters,
+  // sort, page, open hotel), so a refresh, Back/Forward or a pasted link lands on the same view.
   const [searchParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
   const criteria = useMemo(() => criteriaFromParams(searchParams), [searchParams])
+  const view = useMemo(() => viewFromParams(searchParams), [searchParams])
   const key = criteria ? criteriaKey(criteria) : ''
-  const page = pageFromParams(searchParams)
-  const detailId = searchParams.get('hotel')
 
   // The form is a draft: it starts from the URL's search (or the last unsubmitted draft in this tab).
   const [initial] = useState(() => criteria ?? savedDraft())
@@ -109,13 +159,12 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const [departure, setDeparture] = useState(initial?.departure ?? isoDate(8))
   const [adults, setAdults] = useState(initial?.adults ?? 2)
   const [children, setChildren] = useState(initial?.children ?? 0)
-  const [ratings, setRatings] = useState<number[]>(initial?.stars ?? [])
 
   const [results, setResults] = useState<CombinedSearchResult | null>(null)
   const [resultsAt, setResultsAt] = useState(0)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [booking, setBooking] = useState<{ hotel: FoundHotel; ctx: SearchContext } | null>(null)
+  const [booking, setBooking] = useState<{ hotel: FoundHotel; room: RoomDetail; ctx: SearchContext } | null>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
   const searchSeq = useRef(0) // ignores a response once a newer search has started
   const freshNext = useRef(false) // the next URL-driven load is a user search: skip saved results
@@ -135,8 +184,8 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   }, [country])
 
   useEffect(() => {
-    saveDraft({ country, cities: selectedCities, arrival, departure, adults, children, stars: ratings })
-  }, [country, selectedCities, arrival, departure, adults, children, ratings])
+    saveDraft({ country, cities: selectedCities, arrival, departure, adults, children })
+  }, [country, selectedCities, arrival, departure, adults, children])
 
   useEffect(() => rememberLastSearch(location.search), [location.search])
 
@@ -182,7 +231,6 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     setDeparture(criteria.departure)
     setAdults(criteria.adults)
     setChildren(criteria.children)
-    setRatings(criteria.stars)
     const fresh = freshNext.current
     freshNext.current = false
     loadResults(criteria, fresh)
@@ -190,8 +238,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, loadResults])
 
-  // Map a destination code to its display name (falls back to the code). Used for the selected-city
-  // chips and to label each result hotel by its own city in a multi-city search.
+  // Map a destination code to its display name (falls back to the code).
   const cityNameOf = useMemo(() => {
     const byCode = new Map(cities.map((c) => [c.cityCode, c.name]))
     return (code: string) => byCode.get(code) ?? code
@@ -199,34 +246,35 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const canSearch = country && selectedCities.length > 0 && arrival && departure && !searching
 
   // Submitting puts the search in the URL (a new history entry), which loads it — always fresh from the
-  // supplier. Re-submitting the search already shown refreshes its prices in place.
+  // supplier. Re-submitting the search already shown refreshes its prices in place. Sort and star filter
+  // carry over; meal plans differ per destination, so that filter resets.
   function doSearch() {
-    const c: SearchCriteria = {
-      country,
-      cities: selectedCities,
-      arrival,
-      departure,
-      adults,
-      children,
-      stars: [...ratings].sort(),
-    }
+    const c: SearchCriteria = { country, cities: selectedCities, arrival, departure, adults, children }
+    const keep = { stars: view.stars, sort: view.sort }
     if (criteria && criteriaKey(c) === key) {
-      navigate({ search: toQuery(c) }, { replace: true }) // back to page 1, details closed
+      navigate({ search: toQuery(c, keep) }, { replace: true })
       loadResults(c, true)
     } else {
       freshNext.current = true
-      navigate({ search: toQuery(c) })
+      navigate({ search: toQuery(c, keep) })
     }
   }
 
-  const goToPage = (p: number) => criteria && navigate({ search: toQuery(criteria, { page: p }) })
+  // Filters and sort replace the current history entry (Back leaves the results rather than undoing a
+  // checkbox) and start again from page 1.
+  const updateView = (patch: Partial<ResultsView>) =>
+    criteria && navigate({ search: toQuery(criteria, { ...view, hotel: undefined, page: 0, ...patch }) }, { replace: true })
+
+  const goToPage = (p: number) =>
+    criteria && navigate({ search: toQuery(criteria, { ...view, hotel: undefined, page: p }) })
 
   // Details are part of the URL too: Back closes them, a refresh keeps them open.
   const openDetail = (h: FoundHotel) =>
-    criteria && navigate({ search: toQuery(criteria, { page, hotel: h.id }) }, { state: { detailFromResults: true } })
+    criteria &&
+    navigate({ search: toQuery(criteria, { ...view, hotel: h.id }) }, { state: { detailFromResults: true } })
   const closeDetail = () => {
     if ((location.state as { detailFromResults?: boolean } | null)?.detailFromResults) navigate(-1)
-    else if (criteria) navigate({ search: toQuery(criteria, { page }) }, { replace: true })
+    else if (criteria) navigate({ search: toQuery(criteria, { ...view, hotel: undefined }) }, { replace: true })
   }
 
   // Booking context is built per hotel: each carries its own supplier + session + currency, so the
@@ -246,25 +294,36 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     children: c.children,
   })
 
-  const totalHotels = results?.hotels.length ?? 0
+  const rows = useMemo(() => (results ? arrange(results.hotels, view) : []), [results, view])
+  const options = useMemo(() => (results ? facets(results.hotels) : { stars: [], meals: [] }), [results])
+  const totalHotels = rows.length
   const pageCount = Math.max(1, Math.ceil(totalHotels / PAGE_SIZE))
-  const safePage = Math.min(page, pageCount - 1)
-  const pageHotels = results ? results.hotels.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE) : []
-  const detailHotel = detailId ? results?.hotels.find((h) => h.id === detailId) : undefined
+  const safePage = Math.min(view.page, pageCount - 1)
+  const pageRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
+  const detailHotel = view.hotel ? results?.hotels.find((h) => h.id === view.hotel) : undefined
   const stale = results != null && Date.now() - resultsAt > STALE_AFTER_MS
+  const filtered = view.stars.length > 0 || view.meals.length > 0
+  const stay = criteria
+    ? [
+        count(nights(criteria.arrival, criteria.departure), 'night', 'nights'),
+        count(criteria.adults, 'adult', 'adults'),
+        ...(criteria.children ? [count(criteria.children, 'child', 'children')] : []),
+      ].join(', ')
+    : ''
 
   // Search results only carry photos for hotels already in the cache. For the rest, fetch covers for
-  // the cards on the current page only (one batched backend call → at most one Hotelbeds request per
+  // the rows on the current page only (one batched backend call → at most one Hotelbeds request per
   // page). A hotel is asked for once per session, so revisiting a page never re-spends quota.
   const [covers, setCovers] = useState<Record<string, string>>({})
   const coversRequested = useRef(new Set<string>())
   const coverKey = (h: FoundHotel) => `${h.provider}:${h.id}`
+  const pageKey = pageRows.map((r) => coverKey(r.hotel)).join('|')
   useEffect(() => {
     const byProvider = new Map<Provider, string[]>()
-    for (const h of pageHotels) {
-      const key = coverKey(h)
-      if (h.image || coversRequested.current.has(key)) continue
-      coversRequested.current.add(key)
+    for (const { hotel: h } of pageRows) {
+      const k = coverKey(h)
+      if (h.image || coversRequested.current.has(k)) continue
+      coversRequested.current.add(k)
       byProvider.set(h.provider, [...(byProvider.get(h.provider) ?? []), h.id])
     }
     byProvider.forEach((ids, provider) => {
@@ -277,30 +336,34 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
             return next
           }),
         )
-        .catch((e) => console.warn('Could not load hotel photos', e)) // cosmetic: cards keep the placeholder
+        .catch((e) => console.warn('Could not load hotel photos', e)) // cosmetic: rows keep the placeholder
     })
-    // pageHotels is derived from these two.
+    // pageKey identifies pageRows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results, safePage])
+  }, [pageKey])
 
   // Bring the results back into view when paging through a long list (not on first load: a refresh
   // keeps the browser's own scroll position).
-  const pageSeen = useRef(page)
+  const pageSeen = useRef(view.page)
   useEffect(() => {
-    if (page === pageSeen.current) return
-    pageSeen.current = page
+    if (view.page === pageSeen.current) return
+    pageSeen.current = view.page
     if (results) resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page])
+  }, [view.page])
+
+  const failed = results?.providerStatus.filter((s) => !s.ok) ?? []
 
   return (
     <div className="search-view">
-      <div className="hero">
-        <h2>
-          Find your <span className="grad">next stay</span>
-        </h2>
-        <p>Pick one or more destinations and dates — availability is fetched live from Hotelbeds.</p>
-      </div>
+      {!criteria && (
+        <div className="hero">
+          <h2>
+            Find your <span className="grad">next stay</span>
+          </h2>
+          <p>Pick one or more destinations and dates — availability is fetched live from Hotelbeds.</p>
+        </div>
+      )}
 
       <section className="panel search-card">
         <div className="search-form">
@@ -351,21 +414,6 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                   </option>
                 ))}
             </select>
-            {selectedCities.length > 0 && (
-              <div className="city-chips">
-                {selectedCities.map((code) => (
-                  <button
-                    key={code}
-                    type="button"
-                    className="city-chip"
-                    title="Remove"
-                    onClick={() => setSelectedCities((cs) => cs.filter((x) => x !== code))}
-                  >
-                    {cityNameOf(code)} <IconClose size={12} />
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           <div className="field">
@@ -394,40 +442,40 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
             <input type="number" min={0} max={6} value={children} onChange={(e) => setChildren(+e.target.value)} />
           </div>
 
+          <button className="btn navy search-btn" disabled={!canSearch} onClick={doSearch}>
+            {searching ? <IconSpinner size={18} /> : <IconSearch size={18} />}
+            {searching ? 'Searching…' : 'Search'}
+          </button>
         </div>
-
-        <div className="search-extras">
-          <span className="filter-label">Star rating</span>
-          <div className="star-chips">
-            {[1, 2, 3, 4, 5].map((n) => (
+        {selectedCities.length > 0 && (
+          <div className="city-chips">
+            {selectedCities.map((code) => (
               <button
-                key={n}
-                className={`star-chip ${ratings.includes(n) ? 'on' : ''}`}
-                onClick={() =>
-                  setRatings((rs) => (rs.includes(n) ? rs.filter((x) => x !== n) : [...rs, n]))
-                }
+                key={code}
+                type="button"
+                className="city-chip"
+                title="Remove"
+                onClick={() => setSelectedCities((cs) => cs.filter((x) => x !== code))}
               >
-                {n} <IconStar size={13} />
+                {cityNameOf(code)} <IconClose size={12} />
               </button>
             ))}
           </div>
-        </div>
-
-        <button className="btn navy search-btn" disabled={!canSearch} onClick={doSearch}>
-          {searching ? <IconSpinner size={18} /> : <IconSearch size={18} />}
-          {searching ? 'Searching…' : 'Search hotels'}
-        </button>
+        )}
       </section>
 
       {searching && (
         <section className="results">
-          <div className="hotel-grid">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div className="skeleton-card" key={i}>
-                <div className="sk sk-banner" />
-                <div className="sk-body">
+          <div className="hotel-list">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div className="hotel-row skeleton-row" key={i}>
+                <div className="sk sk-photo" />
+                <div className="hotel-main">
                   <div className="sk sk-line lg" />
                   <div className="sk sk-line w40" />
+                  <div className="sk sk-line w60" />
+                </div>
+                <div className="hotel-side">
                   <div className="sk sk-line w60" />
                   <div className="sk sk-btn" />
                 </div>
@@ -440,151 +488,176 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
       {error && !searching && <div className="alert error">{error}</div>}
 
       {results && criteria && !searching && (
-        <section className="results" ref={resultsRef}>
-          <div className="results-head">
-            <h2>
-              {results.hotels.length} hotel{results.hotels.length === 1 ? '' : 's'} in{' '}
-              {criteria.cities.map(cityNameOf).join(', ')}
-              {pageCount > 1 && (
-                <span className="muted" style={{ fontSize: 14, fontWeight: 500 }}>
-                  {' '}
-                  · showing {safePage * PAGE_SIZE + 1}–{Math.min((safePage + 1) * PAGE_SIZE, totalHotels)}
-                </span>
-              )}
-            </h2>
-            <span className="pill">
-              <IconCalendar size={13} /> {criteria.arrival} → {criteria.departure}
-            </span>
-          </div>
-
-          {stale && (
-            <div className="alert" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-              <span>
-                Prices from {new Date(resultsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} —
-                availability may have changed.
-              </span>
-              <button className="btn" onClick={() => loadResults(criteria, true)}>
-                Refresh prices
+        <section className="results results-layout" ref={resultsRef}>
+          <aside className="filters">
+            <h3>Filter by</h3>
+            {options.stars.length > 0 && (
+              <div className="filter-group" role="group" aria-label="Property rating">
+                <h4>Property rating</h4>
+                {options.stars.map(({ value, count: n }) => (
+                  <label key={value} className="check">
+                    <input
+                      type="checkbox"
+                      checked={view.stars.includes(value)}
+                      onChange={() => updateView({ stars: toggle(view.stars, value) })}
+                    />
+                    <span>{count(value, 'star', 'stars')}</span>
+                    <span className="count">{n}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {options.meals.length > 0 && (
+              <div className="filter-group" role="group" aria-label="Meals">
+                <h4>Meals</h4>
+                {options.meals.map(({ value, count: n }) => (
+                  <label key={value} className="check">
+                    <input
+                      type="checkbox"
+                      checked={view.meals.includes(value)}
+                      onChange={() => updateView({ meals: toggle(view.meals, value) })}
+                    />
+                    <span>{tidy(value)}</span>
+                    <span className="count">{n}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {filtered && (
+              <button className="link-btn" onClick={() => updateView({ stars: [], meals: [] })}>
+                Clear filters
               </button>
-            </div>
-          )}
+            )}
+          </aside>
 
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '4px 0 16px' }}>
-            {results.providerStatus.map((s) => (
-              <span
-                key={s.provider}
-                title={s.error ?? undefined}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  padding: '4px 10px',
-                  borderRadius: 999,
-                  color: s.ok ? '#fff' : '#b91c1c',
-                  background: s.ok ? PROVIDER_COLOR[s.provider] : '#fee2e2',
-                }}
-              >
-                {PROVIDER_LABEL[s.provider]}
-                {s.ok ? ` · ${s.hotelCount}` : ` · ${s.error ?? 'error'}`}
-              </span>
-            ))}
-          </div>
-
-          {results.hotels.length === 0 ? (
-            <div className="empty">No availability for these dates. Try a different range.</div>
-          ) : (
-            <>
-            <div className="hotel-grid">
-              {pageHotels.map((h, idx) => {
-                const stars = Math.round(Number(h.rating) || 0)
-                const photo = h.image ?? covers[coverKey(h)]
-                return (
-                  <article className="hotel-card" key={`${h.provider}:${h.id}:${safePage}:${idx}`} style={{ animationDelay: `${idx * 60}ms` }}>
-                    <div
-                      className="hotel-banner"
-                      // The gradient sits under the photo, so a missing/broken image still looks intentional.
-                      style={{ backgroundImage: photo ? `url("${photo}"), ${bannerFor(h.name)}` : bannerFor(h.name) }}
-                    >
-                      {!photo && <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>}
-                      <span className="rating-chip">
-                        <IconStar size={12} /> {stars}.0
-                      </span>
-                      <span style={{ position: 'absolute', top: 10, left: 10 }}>
-                        <ProviderBadge provider={h.provider} />
-                      </span>
-                    </div>
-                    <div className="hotel-body">
-                      <div className="hotel-title">
-                        <h3>{h.name}</h3>
-                        <span className="hotel-loc">
-                          <IconPin size={13} /> {cityNameOf(h.city)}
-                        </span>
-                      </div>
-                      <div className="price-row">
-                        <span className="price">
-                          <span className="cur">{h.currency}</span>
-                          {Number(h.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </span>
-                        <span className="muted">/ stay</span>
-                      </div>
-                      <ul className="rooms">
-                        {h.roomDetails.slice(0, 3).map((r, i) => (
-                          <li key={i}>
-                            <span className="room-info">
-                              <IconBed size={15} />
-                              <span className="rt">
-                                <strong>{r.type}</strong>
-                                <span className="muted" style={{ fontSize: 12 }}>
-                                  {r.boardBasis}
-                                </span>
-                              </span>
-                            </span>
-                            <span className="room-rate">{money(r.totalRate.split('|')[0], h.currency)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="card-actions">
-                        <button className="btn" onClick={() => openDetail(h)}>
-                          <IconInfo size={15} /> Details
-                        </button>
-                        <button
-                          className="btn primary"
-                          onClick={() => setBooking({ hotel: h, ctx: ctxFor(h, criteria) })}
-                        >
-                          Book now
-                        </button>
-                      </div>
-                    </div>
-                  </article>
-                )
-              })}
+          <div className="results-main">
+            <div className="results-head">
+              <div>
+                <h2>
+                  {criteria.cities.map(cityNameOf).join(', ')}: {count(totalHotels, 'property', 'properties')} found
+                </h2>
+                <div className="muted results-sub">
+                  {shortDate(criteria.arrival)} – {shortDate(criteria.departure)} · {stay}
+                  {filtered && ` · filtered from ${results.hotels.length}`}
+                </div>
+              </div>
+              <label className="sort">
+                <span>Sort by</span>
+                <select value={view.sort} onChange={(e) => updateView({ sort: e.target.value as SortKey })}>
+                  {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
+                    <option key={k} value={k}>
+                      {SORT_LABEL[k]}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            {pageCount > 1 && (
-              <div
-                className="pager"
-                style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 14, marginTop: 24 }}
-              >
-                <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
-                  ‹ Prev
-                </button>
-                <span className="muted">
-                  Page {safePage + 1} of {pageCount}
+
+            {stale && (
+              <div className="alert" style={{ alignItems: 'center', gap: 12 }}>
+                <span>
+                  Prices from {new Date(resultsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} —
+                  availability may have changed.
                 </span>
-                <button className="btn" disabled={safePage >= pageCount - 1} onClick={() => goToPage(safePage + 1)}>
-                  Next ›
+                <button className="btn small" onClick={() => loadResults(criteria, true)}>
+                  Refresh prices
                 </button>
               </div>
             )}
-            </>
-          )}
+
+            {failed.map((s) => (
+              <div className="alert error" key={s.provider}>
+                {PROVIDER_LABEL[s.provider]}: {s.error ?? 'search failed'}
+              </div>
+            ))}
+
+            {rows.length === 0 ? (
+              <div className="empty">
+                {results.hotels.length
+                  ? 'No properties match these filters.'
+                  : 'No availability for these dates. Try a different range.'}
+              </div>
+            ) : (
+              <>
+                <div className="hotel-list">
+                  {pageRows.map(({ hotel: h, room, price }, idx) => {
+                    const stars = starsOf(h)
+                    const photo = h.image ?? covers[coverKey(h)]
+                    const more = h.roomDetails.length - 1
+                    return (
+                      <article
+                        className="hotel-row"
+                        key={`${h.provider}:${h.id}`}
+                        style={{ animationDelay: `${idx * 40}ms` }}
+                      >
+                        <button
+                          type="button"
+                          className="hotel-photo"
+                          // The gradient sits under the photo, so a missing/broken image still looks intentional.
+                          style={{ backgroundImage: photo ? `url("${photo}"), ${bannerFor(h.name)}` : bannerFor(h.name) }}
+                          onClick={() => openDetail(h)}
+                          aria-label={`Photos and details of ${h.name}`}
+                        >
+                          {!photo && <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>}
+                        </button>
+
+                        <div className="hotel-main">
+                          <h3>
+                            <button type="button" className="hotel-name" onClick={() => openDetail(h)}>
+                              {h.name.trim()}
+                            </button>
+                            {stars > 0 && (
+                              <span className="stars" aria-label={count(stars, 'star', 'stars')}>
+                                {Array.from({ length: stars }).map((_, i) => (
+                                  <IconStar key={i} size={13} />
+                                ))}
+                              </span>
+                            )}
+                          </h3>
+                          <div className="hotel-loc">
+                            <IconPin size={13} /> {cityNameOf(h.city)}
+                          </div>
+                          <div className="offer">
+                            <strong>{tidy(room.type)}</strong>
+                            {room.boardBasis && <span className="board">{tidy(room.boardBasis)}</span>}
+                            {more > 0 && <span className="muted">+{count(more, 'more room option', 'more room options')}</span>}
+                          </div>
+                        </div>
+
+                        <div className="hotel-side">
+                          <span className="muted stay">{stay}</span>
+                          <span className="price">{wholeMoney(price, h.currency)}</span>
+                          <button className="btn primary" onClick={() => openDetail(h)}>
+                            See availability
+                          </button>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+                {pageCount > 1 && (
+                  <div className="pager">
+                    <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
+                      ‹ Prev
+                    </button>
+                    <span className="muted">
+                      Page {safePage + 1} of {pageCount}
+                    </span>
+                    <button className="btn" disabled={safePage >= pageCount - 1} onClick={() => goToPage(safePage + 1)}>
+                      Next ›
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </section>
       )}
 
       {booking && (
         <BookHotelDialog
           hotel={booking.hotel}
+          room={booking.room}
           ctx={booking.ctx}
           onClose={() => setBooking(null)}
           onBooked={() => {
@@ -594,12 +667,20 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         />
       )}
 
-      {detailId && (
+      {view.hotel && (
         <HotelDetailDialog
-          key={detailId}
-          hotelId={detailId}
+          key={view.hotel}
+          hotelId={view.hotel}
           hotelName={detailHotel?.name ?? ''}
           provider={detailHotel?.provider}
+          offers={
+            detailHotel ? { rooms: detailHotel.roomDetails, currency: detailHotel.currency, stayLabel: stay } : undefined
+          }
+          onReserve={(room) => {
+            if (!detailHotel || !criteria) return
+            setBooking({ hotel: detailHotel, room, ctx: ctxFor(detailHotel, criteria) })
+            closeDetail()
+          }}
           onClose={closeDetail}
         />
       )}

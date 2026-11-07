@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ApiError, api } from '../api'
-import type { BookingView, FoundHotel, PreBookingResponse, Provider, RoomOffer } from '../types'
+import type { BookingView, FoundHotel, PreBookingResponse, Provider, RoomDetail, RoomOffer } from '../types'
 import { IconCheck, IconClose, IconSpinner } from '../icons'
 
 export interface SearchContext {
@@ -38,8 +38,7 @@ function bannerFor(key: string): string {
 const money = (v: string, currency: string) =>
   `${currency} ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-function offerFrom(hotel: FoundHotel): RoomOffer {
-  const r = hotel.roomDetails[0]
+function offerFrom(r: RoomDetail): RoomOffer {
   return {
     type: r.type,
     bookingKey: r.bookingKey,
@@ -53,11 +52,13 @@ function offerFrom(hotel: FoundHotel): RoomOffer {
 
 export default function BookHotelDialog({
   hotel,
+  room,
   ctx,
   onClose,
   onBooked,
 }: {
   hotel: FoundHotel
+  room?: RoomDetail // the offer the guest picked; defaults to the hotel's first
   ctx: SearchContext
   onClose: () => void
   onBooked: () => void
@@ -71,7 +72,7 @@ export default function BookHotelDialog({
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
 
-  const offer = offerFrom(hotel)
+  const offer = offerFrom(room ?? hotel.roomDetails[0])
 
   useEffect(() => {
     let active = true

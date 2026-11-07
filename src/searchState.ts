@@ -4,7 +4,7 @@
 //  - the unsubmitted form draft and the last search URL are kept per tab too.
 import type { CombinedSearchResult, DestinationSearchRequest } from './types'
 
-/** A submitted search: everything needed to show (or re-run) it. */
+/** A submitted search: everything needed to (re-)run it against the supplier. */
 export interface SearchCriteria {
   country: string
   cities: string[]
@@ -12,7 +12,21 @@ export interface SearchCriteria {
   departure: string
   adults: number
   children: number
+}
+
+export type SortKey = 'top' | 'price' | 'price-desc' | 'stars'
+const SORT_KEYS: SortKey[] = ['top', 'price', 'price-desc', 'stars']
+
+/**
+ * How the results of a search are shown — filters, sort, page, open hotel. Applied in the browser, so
+ * changing any of it never calls the supplier.
+ */
+export interface ResultsView {
+  page: number // 0-based
+  hotel?: string // hotel whose details are open
   stars: number[]
+  meals: string[] // board basis names, e.g. "BED AND BREAKFAST"
+  sort: SortKey
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -39,18 +53,25 @@ export function criteriaFromParams(p: URLSearchParams): SearchCriteria | null {
     departure,
     adults: int(p.get('adults'), 2, 1, 8),
     children: int(p.get('children'), 0, 0, 6),
-    stars: [...new Set(list(p.get('stars')).map(Number))].filter((n) => Number.isInteger(n) && n >= 1 && n <= 5).sort(),
   }
 }
 
-/** The 1-based `page` param as a 0-based index. */
-export const pageFromParams = (p: URLSearchParams) => int(p.get('page'), 1, 1, 100_000) - 1
+export function viewFromParams(p: URLSearchParams): ResultsView {
+  const sort = p.get('sort') as SortKey | null
+  return {
+    page: int(p.get('page'), 1, 1, 100_000) - 1,
+    hotel: p.get('hotel') || undefined,
+    stars: [...new Set(list(p.get('stars')).map(Number))].filter((n) => Number.isInteger(n) && n >= 1 && n <= 5).sort(),
+    meals: [...new Set(list(p.get('meal')))],
+    sort: sort && SORT_KEYS.includes(sort) ? sort : 'top',
+  }
+}
 
 // Commas stay literal so lists read naturally in the address bar (…&cities=PMI,BCN).
 const enc = (v: string) => encodeURIComponent(v).replace(/%2C/gi, ',')
 
-/** `?…` query string for a search, optionally on a results page / with a hotel's details open. */
-export function toQuery(c: SearchCriteria, extra: { page?: number; hotel?: string } = {}): string {
+/** `?…` query string for a search, plus how its results are shown (filters, sort, page, open hotel). */
+export function toQuery(c: SearchCriteria, view: Partial<ResultsView> = {}): string {
   const parts: [string, string][] = [
     ['country', c.country],
     ['cities', c.cities.join(',')],
@@ -59,13 +80,15 @@ export function toQuery(c: SearchCriteria, extra: { page?: number; hotel?: strin
     ['adults', String(c.adults)],
     ['children', String(c.children)],
   ]
-  if (c.stars.length) parts.push(['stars', [...c.stars].sort().join(',')])
-  if (extra.page && extra.page > 0) parts.push(['page', String(extra.page + 1)])
-  if (extra.hotel) parts.push(['hotel', extra.hotel])
+  if (view.stars?.length) parts.push(['stars', [...view.stars].sort().join(',')])
+  if (view.meals?.length) parts.push(['meal', view.meals.join(',')])
+  if (view.sort && view.sort !== 'top') parts.push(['sort', view.sort])
+  if (view.page && view.page > 0) parts.push(['page', String(view.page + 1)])
+  if (view.hotel) parts.push(['hotel', view.hotel])
   return '?' + parts.map(([k, v]) => `${k}=${enc(v)}`).join('&')
 }
 
-/** Identity of a search — ignores the results page and the open hotel. */
+/** Identity of a search — ignores how its results are shown. */
 export const criteriaKey = (c: SearchCriteria) => toQuery(c)
 
 export function toRequest(c: SearchCriteria): DestinationSearchRequest {
@@ -75,9 +98,14 @@ export function toRequest(c: SearchCriteria): DestinationSearchRequest {
     countryCode: c.country,
     cities: c.cities,
     guestNationality: c.country,
-    hotelRatings: c.stars.length ? [...c.stars].sort() : undefined,
     rooms: [{ type: 'Room-1', noOfAdults: c.adults, noOfChilds: c.children }],
   }
+}
+
+/** Nights between two yyyy-MM-dd dates (at least 1). */
+export function nights(arrival: string, departure: string): number {
+  const ms = Date.parse(departure + 'T00:00:00Z') - Date.parse(arrival + 'T00:00:00Z')
+  return Math.max(1, Math.round(ms / 86_400_000))
 }
 
 // --- per-tab storage (sessionStorage; every access guarded — it can be full or blocked) ------------

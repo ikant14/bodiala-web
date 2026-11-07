@@ -1,7 +1,19 @@
 import { useEffect, useState } from 'react'
 import { ApiError, api } from '../api'
-import type { HotelView, Provider } from '../types'
-import { IconClose, IconImage, IconPin, IconSpinner, IconStar } from '../icons'
+import type { HotelView, Provider, RoomDetail } from '../types'
+import { IconClose, IconPin, IconSpinner, IconStar } from '../icons'
+import { tidy } from '../format'
+
+/** The bookable offers for this hotel from the current search, shown as the availability list. */
+export interface RoomOffers {
+  rooms: RoomDetail[]
+  currency: string
+  stayLabel: string // e.g. "1 night, 2 adults"
+}
+
+const roomPrice = (r: RoomDetail) => Number(r.totalRate.split('|')[0])
+const money = (v: number, currency: string) =>
+  `${currency} ${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 const BANNERS = [
   'linear-gradient(135deg,#6366f1,#8b5cf6)',
@@ -29,11 +41,15 @@ export default function HotelDetailDialog({
   hotelId,
   hotelName,
   provider,
+  offers,
+  onReserve,
   onClose,
 }: {
   hotelId: string
   hotelName: string
   provider?: Provider
+  offers?: RoomOffers
+  onReserve?: (room: RoomDetail) => void
   onClose: () => void
 }) {
   const [view, setView] = useState<HotelView | null>(null)
@@ -57,10 +73,11 @@ export default function HotelDetailDialog({
   const gallery = (view?.images ?? []).slice(0, 6)
   const propertyAmenities = amenityList(view?.propertyAmenities)
   const roomAmenities = amenityList(view?.roomAmenities)
+  const rooms = [...(offers?.rooms ?? [])].sort((a, b) => roomPrice(a) - roomPrice(b))
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-hero" style={{ backgroundImage: bannerFor(hotelName) }}>
           <button className="icon-btn" onClick={onClose} aria-label="Close">
             <IconClose size={18} />
@@ -87,10 +104,7 @@ export default function HotelDetailDialog({
                       key={i}
                       className="detail-img"
                       style={{ backgroundImage: `url("${src}"), ${bannerFor(hotelName + i)}` }}
-                      title={src}
-                    >
-                      <IconImage size={18} />
-                    </div>
+                    />
                   ))}
                 </div>
               )}
@@ -112,6 +126,31 @@ export default function HotelDetailDialog({
                   </>
                 )}
               </div>
+            </>
+          )}
+
+          {offers && rooms.length > 0 && (
+            <div className="detail-section">
+              <h4>Availability · {offers.stayLabel}</h4>
+              <ul className="room-options">
+                {rooms.map((r, i) => (
+                  <li key={`${r.bookingKey}:${i}`}>
+                    <div className="ro-info">
+                      <strong>{tidy(r.type)}</strong>
+                      <span>{tidy(r.boardBasis)}</span>
+                    </div>
+                    <div className="ro-price">{money(roomPrice(r), offers.currency)}</div>
+                    <button className="btn primary small" onClick={() => onReserve?.(r)}>
+                      Reserve
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {hotel && (
+            <>
 
               {hotel.description && (
                 <div className="detail-section">
