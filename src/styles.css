@@ -574,7 +574,9 @@ select:disabled {
 
 .hotel-banner {
   position: relative;
-  height: 108px;
+  height: 140px;
+  background-position: center;
+  background-size: cover;
   display: flex;
   align-items: flex-end;
   padding: 12px 14px;

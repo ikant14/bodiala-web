@@ -54,6 +54,13 @@ export const api = {
   hotel: (hotelCode: string | number, provider?: Provider) =>
     request<HotelView>(`/api/static-data/hotels/${hotelCode}${provider ? `?provider=${q(provider)}` : ''}`),
 
+  // Cover photo per hotel code (codes without one are omitted). With `provider`, hotels not cached
+  // yet are fetched live in one batched call — so ask only for the cards actually on screen.
+  hotelCovers: (codes: string[], provider?: Provider) =>
+    request<Record<string, string>>(
+      `/api/static-data/hotel-covers?codes=${codes.map(q).join(',')}${provider ? `&provider=${q(provider)}` : ''}`,
+    ),
+
   searchByDestination: (r: DestinationSearchRequest) =>
     request<CombinedSearchResult>('/api/search/by-destination', {
       method: 'POST',

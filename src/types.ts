@@ -83,6 +83,7 @@ export interface FoundHotel {
   rating: string
   price: string
   roomDetails: RoomDetail[]
+  image: string | null // cover photo from the static-data cache; null when the hotel isn't cached
 }
 
 export interface ProviderStatus {

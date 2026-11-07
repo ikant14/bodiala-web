@@ -153,6 +153,36 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const safePage = Math.min(page, pageCount - 1)
   const pageHotels = results ? results.hotels.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE) : []
 
+  // Search results only carry photos for hotels already in the cache. For the rest, fetch covers for
+  // the cards on the current page only (one batched backend call → at most one Hotelbeds request per
+  // page). A hotel is asked for once per session, so revisiting a page never re-spends quota.
+  const [covers, setCovers] = useState<Record<string, string>>({})
+  const coversRequested = useRef(new Set<string>())
+  const coverKey = (h: FoundHotel) => `${h.provider}:${h.id}`
+  useEffect(() => {
+    const byProvider = new Map<Provider, string[]>()
+    for (const h of pageHotels) {
+      const key = coverKey(h)
+      if (h.image || coversRequested.current.has(key)) continue
+      coversRequested.current.add(key)
+      byProvider.set(h.provider, [...(byProvider.get(h.provider) ?? []), h.id])
+    }
+    byProvider.forEach((ids, provider) => {
+      api
+        .hotelCovers(ids, provider)
+        .then((found) =>
+          setCovers((prev) => {
+            const next = { ...prev }
+            for (const [id, url] of Object.entries(found)) next[`${provider}:${id}`] = url
+            return next
+          }),
+        )
+        .catch((e) => console.warn('Could not load hotel photos', e)) // cosmetic: cards keep the placeholder
+    })
+    // pageHotels is derived from these two.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results, safePage])
+
   // Bring the results back into view when paging through a long list.
   useEffect(() => {
     if (results) resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -347,10 +377,15 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
             <div className="hotel-grid">
               {pageHotels.map((h, idx) => {
                 const stars = Math.round(Number(h.rating) || 0)
+                const photo = h.image ?? covers[coverKey(h)]
                 return (
                   <article className="hotel-card" key={`${h.provider}:${h.id}:${safePage}:${idx}`} style={{ animationDelay: `${idx * 60}ms` }}>
-                    <div className="hotel-banner" style={{ backgroundImage: bannerFor(h.name) }}>
-                      <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>
+                    <div
+                      className="hotel-banner"
+                      // The gradient sits under the photo, so a missing/broken image still looks intentional.
+                      style={{ backgroundImage: photo ? `url("${photo}"), ${bannerFor(h.name)}` : bannerFor(h.name) }}
+                    >
+                      {!photo && <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>}
                       <span className="rating-chip">
                         <IconStar size={12} /> {stars}.0
                       </span>
