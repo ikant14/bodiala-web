@@ -35,7 +35,7 @@ export default function RoomRates({
               <div className="rate-row" key={`${r.bookingKey}:${i}`}>
                 <span className="rate-board">{tidy(r.boardBasis) || 'Room only'}</span>
                 <span className="rate-price">{money(roomPrice(r), currency)}</span>
-                <button className="btn navy" onClick={() => onBook(r)}>
+                <button className="btn primary" onClick={() => onBook(r)}>
                   Book
                 </button>
               </div>

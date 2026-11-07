@@ -436,7 +436,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
           <input type="number" min={0} max={6} value={children} onChange={(e) => setChildren(+e.target.value)} />
         </div>
 
-        <button className="btn navy search-btn" disabled={!canSearch} onClick={doSearch}>
+        <button className="btn primary search-btn" disabled={!canSearch} onClick={doSearch}>
           {searching ? <IconSpinner size={16} /> : <IconSearch size={16} />}
           {searching ? 'Searching…' : 'Search'}
         </button>
@@ -682,7 +682,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                                   <span className="muted stay">{stay}</span>
                                 </div>
                                 <button
-                                  className={`btn ${open ? 'soft' : 'navy'}`}
+                                  className={`btn ${open ? 'soft' : 'primary'}`}
                                   aria-expanded={open}
                                   onClick={() => toggleRooms(h)}
                                 >
