@@ -85,6 +85,18 @@ export const IconArrow = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
+export const IconChevronDown = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+)
+
+export const IconChevronUp = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M6 15l6-6 6 6" />
+  </svg>
+)
+
 export const IconSpinner = ({ size = 18, className }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={`spin ${className ?? ''}`}>
     <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />

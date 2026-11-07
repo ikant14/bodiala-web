@@ -144,7 +144,7 @@ export default function BookHotelDialog({
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-hero" style={{ backgroundImage: bannerFor(hotel.name) }}>
+        <div className="modal-hero">
           <button className="icon-btn" onClick={onClose} aria-label="Close">
             <IconClose size={18} />
           </button>

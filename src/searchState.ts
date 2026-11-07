@@ -24,6 +24,7 @@ const SORT_KEYS: SortKey[] = ['top', 'price', 'price-desc', 'stars']
 export interface ResultsView {
   page: number // 0-based
   hotel?: string // hotel whose details are open
+  name: string // hotel-name text filter
   stars: number[]
   meals: string[] // board basis names, e.g. "BED AND BREAKFAST"
   sort: SortKey
@@ -61,6 +62,7 @@ export function viewFromParams(p: URLSearchParams): ResultsView {
   return {
     page: int(p.get('page'), 1, 1, 100_000) - 1,
     hotel: p.get('hotel') || undefined,
+    name: p.get('name') ?? '',
     stars: [...new Set(list(p.get('stars')).map(Number))].filter((n) => Number.isInteger(n) && n >= 1 && n <= 5).sort(),
     meals: [...new Set(list(p.get('meal')))],
     sort: sort && SORT_KEYS.includes(sort) ? sort : 'top',
@@ -80,6 +82,7 @@ export function toQuery(c: SearchCriteria, view: Partial<ResultsView> = {}): str
     ['adults', String(c.adults)],
     ['children', String(c.children)],
   ]
+  if (view.name?.trim()) parts.push(['name', view.name])
   if (view.stars?.length) parts.push(['stars', [...view.stars].sort().join(',')])
   if (view.meals?.length) parts.push(['meal', view.meals.join(',')])
   if (view.sort && view.sort !== 'top') parts.push(['sort', view.sort])

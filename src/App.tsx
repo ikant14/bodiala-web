@@ -28,25 +28,26 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <div className="brand">
+        <NavLink to={lastSearchHref()} className="brand" aria-label="Bodiala home">
           <span className="logo">
-            <IconSparkle size={22} />
+            <IconSparkle size={18} />
           </span>
           <div>
-            <h1>Bodiala</h1>
-            <p>RezLive hotel search &amp; booking</p>
+            <h1>bodiala</h1>
+            <p>Hotel search &amp; booking</p>
           </div>
-        </div>
+        </NavLink>
+
+        <nav className="tabs">
+          <NavLink to={lastSearchHref()} end className={tabClass}>
+            Search
+          </NavLink>
+          <NavLink to="/bookings" className={tabClass}>
+            My bookings
+          </NavLink>
+        </nav>
 
         <div className="header-right">
-          <nav className="tabs">
-            <NavLink to={lastSearchHref()} end className={tabClass}>
-              Search
-            </NavLink>
-            <NavLink to="/bookings" className={tabClass}>
-              My bookings
-            </NavLink>
-          </nav>
           <button
             className="theme-toggle"
             onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
@@ -67,8 +68,8 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        Demo UI · talks to bodiala at <code>/api</code> (proxied to :8080). Live actions need the{' '}
-        <code>stub</code> profile or real RezLive credentials.
+        Bodiala demo · talks to the backend at <code>/api</code> (proxied to :8080) · live availability from
+        Hotelbeds
       </footer>
     </div>
   )

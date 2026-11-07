@@ -18,10 +18,22 @@ import {
   toRequest,
   viewFromParams,
 } from '../searchState'
-import { tidy } from '../format'
+import { count, money, tidy } from '../format'
 import BookHotelDialog, { type SearchContext } from './BookHotelDialog'
 import HotelDetailDialog from './HotelDetailDialog'
-import { IconCalendar, IconClose, IconGlobe, IconPin, IconSearch, IconSpinner, IconStar, IconUsers } from '../icons'
+import RoomRates, { roomPrice } from './RoomRates'
+import {
+  IconCalendar,
+  IconChevronDown,
+  IconChevronUp,
+  IconClose,
+  IconGlobe,
+  IconPin,
+  IconSearch,
+  IconSpinner,
+  IconStar,
+  IconUsers,
+} from '../icons'
 
 function isoDate(daysFromNow: number): string {
   const d = new Date()
@@ -29,21 +41,14 @@ function isoDate(daysFromNow: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-const BANNERS = [
-  'linear-gradient(135deg,#6366f1,#8b5cf6)',
-  'linear-gradient(135deg,#0ea5e9,#22d3ee)',
-  'linear-gradient(135deg,#f59e0b,#fb7185)',
-  'linear-gradient(135deg,#10b981,#22d3ee)',
-  'linear-gradient(135deg,#ec4899,#8b5cf6)',
-  'linear-gradient(135deg,#3b82f6,#06b6d4)',
-  'linear-gradient(135deg,#8b5cf6,#ec4899)',
-  'linear-gradient(135deg,#f43f5e,#f59e0b)',
-]
+// Placeholder colours behind a hotel photo, so a missing/broken image still looks intentional.
+const BANNERS = ['#cfd8e3', '#d6e4e1', '#e2d7dd', '#d9dce6', '#e4ddd2', '#d3dfe9']
 
 function bannerFor(key: string): string {
   let h = 0
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
-  return BANNERS[h % BANNERS.length]
+  const c = BANNERS[h % BANNERS.length]
+  return `linear-gradient(${c}, ${c})`
 }
 
 const PROVIDER_LABEL: Record<Provider, string> = { REZLIVE: 'RezLive', HOTELBEDS: 'Hotelbeds' }
@@ -56,32 +61,21 @@ const PAGE_SIZE = 12
 const STALE_AFTER_MS = 30 * 60 * 1000
 
 const SORT_LABEL: Record<SortKey, string> = {
-  top: 'Our top picks',
+  top: 'Suggested',
   price: 'Price (lowest first)',
   'price-desc': 'Price (highest first)',
-  stars: 'Property rating (high to low)',
+  stars: 'Category (high to low)',
 }
 
 const errorText = (e: unknown) =>
   e instanceof ApiError ? `${e.status ? e.status + ' · ' : ''}${e.message}` : String(e)
 
-const roomPrice = (r: RoomDetail) => Number(r.totalRate.split('|')[0])
-
 /** Star rating from the supplier's category ("4", "4EST" …); 0 when unknown. */
 const starsOf = (h: FoundHotel) => parseInt(h.rating, 10) || 0
 
-const wholeMoney = (v: number, currency: string) =>
-  `${currency} ${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-
-const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
-
+/** "08 Nov" */
 const shortDate = (iso: string) =>
-  new Date(iso + 'T00:00:00Z').toLocaleDateString(undefined, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    timeZone: 'UTC',
-  })
+  new Date(iso + 'T00:00:00Z').toLocaleDateString(undefined, { day: '2-digit', month: 'short', timeZone: 'UTC' })
 
 /** One result row: the hotel and the offer it's shown with — its cheapest room on the chosen meal plans. */
 interface Row {
@@ -101,8 +95,10 @@ function cheapestRoom(h: FoundHotel, meals: string[]): RoomDetail | undefined {
 
 /** The sidebar filters and the sort, applied in the browser — never a supplier call. */
 function arrange(hotels: FoundHotel[], view: ResultsView): Row[] {
+  const q = view.name.trim().toLowerCase()
   const rows: Row[] = []
   for (const hotel of hotels) {
+    if (q && !hotel.name.toLowerCase().includes(q)) continue
     if (view.stars.length && !view.stars.includes(starsOf(hotel))) continue
     const room = cheapestRoom(hotel, view.meals)
     if (room) rows.push({ hotel, room, price: roomPrice(room) })
@@ -131,7 +127,7 @@ function facets(hotels: FoundHotel[]) {
     }
   }
   return {
-    stars: [5, 4, 3, 2, 1].filter((s) => stars.has(s)).map((s) => ({ value: s, count: stars.get(s)! })),
+    stars: [1, 2, 3, 4, 5].map((s) => ({ value: s, count: stars.get(s) ?? 0 })),
     meals: [...meals.entries()].sort((a, b) => b[1] - a[1]).map(([value, n]) => ({ value, count: n })),
   }
 }
@@ -158,12 +154,14 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const [departure, setDeparture] = useState(initial?.departure ?? isoDate(8))
   const [adults, setAdults] = useState(initial?.adults ?? 2)
   const [children, setChildren] = useState(initial?.children ?? 0)
+  const [editing, setEditing] = useState(false) // "Modify search" open on the results page
 
   const [results, setResults] = useState<CombinedSearchResult | null>(null)
   const [resultsAt, setResultsAt] = useState(0)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [booking, setBooking] = useState<{ hotel: FoundHotel; room: RoomDetail; ctx: SearchContext } | null>(null)
+  const [openRooms, setOpenRooms] = useState<Set<string>>(() => new Set()) // hotels showing their rooms
   const resultsRef = useRef<HTMLDivElement>(null)
   const searchSeq = useRef(0) // ignores a response once a newer search has started
   const freshNext = useRef(false) // the next URL-driven load is a user search: skip saved results
@@ -250,6 +248,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   function doSearch() {
     const c: SearchCriteria = { country, cities: selectedCities, arrival, departure, adults, children }
     const keep = { stars: view.stars, sort: view.sort }
+    setEditing(false)
     if (criteria && criteriaKey(c) === key) {
       navigate({ search: toQuery(c, keep) }, { replace: true })
       loadResults(c, true)
@@ -301,14 +300,15 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const pageRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
   const detailHotel = view.hotel ? results?.hotels.find((h) => h.id === view.hotel) : undefined
   const stale = results != null && Date.now() - resultsAt > STALE_AFTER_MS
-  const filtered = view.stars.length > 0 || view.meals.length > 0
-  const stay = criteria
+  const filtered = view.stars.length > 0 || view.meals.length > 0 || view.name.trim() !== ''
+  const nightCount = criteria ? nights(criteria.arrival, criteria.departure) : 0
+  const guests = criteria
     ? [
-        count(nights(criteria.arrival, criteria.departure), 'night', 'nights'),
         count(criteria.adults, 'adult', 'adults'),
         ...(criteria.children ? [count(criteria.children, 'child', 'children')] : []),
       ].join(', ')
     : ''
+  const stay = criteria ? `${count(nightCount, 'night', 'nights')}, ${guests}` : ''
 
   // Search results only carry photos for hotels already in the cache. For the rest, fetch covers for
   // the rows on the current page only (one batched backend call → at most one Hotelbeds request per
@@ -351,306 +351,383 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page])
 
+  const toggleRooms = (h: FoundHotel) =>
+    setOpenRooms((prev) => {
+      const next = new Set(prev)
+      const k = coverKey(h)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+
   const failed = results?.providerStatus.filter((s) => !s.ok) ?? []
+
+  const searchForm = (
+    <section className="panel search-card">
+      <div className="search-form">
+        <div className="field">
+          <label>
+            <IconGlobe size={14} /> Country
+          </label>
+          <select
+            value={country}
+            onChange={(e) => {
+              setCountry(e.target.value)
+              setSelectedCities([]) // cities belong to the previous country
+            }}
+          >
+            <option value="">Select a country…</option>
+            {countries.map((c) => (
+              <option key={c.countryCode} value={c.countryCode}>
+                {c.name} ({c.countryCode})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>
+            <IconPin size={14} /> Where are you going?
+          </label>
+          <select
+            value=""
+            disabled={!country}
+            onChange={(e) => {
+              const code = e.target.value
+              if (code) setSelectedCities((cs) => (cs.includes(code) ? cs : [...cs, code]))
+            }}
+          >
+            <option value="">
+              {country ? (selectedCities.length ? 'Add another city…' : 'Select a city…') : 'Pick a country first'}
+            </option>
+            {cities
+              .filter((c) => !selectedCities.includes(c.cityCode))
+              .map((c) => (
+                <option key={c.cityCode} value={c.cityCode}>
+                  {c.name} ({c.cityCode})
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>
+            <IconCalendar size={14} /> Check-in
+          </label>
+          <input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
+        </div>
+        <div className="field">
+          <label>
+            <IconCalendar size={14} /> Check-out
+          </label>
+          <input type="date" value={departure} min={arrival} onChange={(e) => setDeparture(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label>
+            <IconUsers size={14} /> Adults
+          </label>
+          <input type="number" min={1} max={8} value={adults} onChange={(e) => setAdults(+e.target.value)} />
+        </div>
+        <div className="field">
+          <label>
+            <IconUsers size={14} /> Children
+          </label>
+          <input type="number" min={0} max={6} value={children} onChange={(e) => setChildren(+e.target.value)} />
+        </div>
+
+        <button className="btn navy search-btn" disabled={!canSearch} onClick={doSearch}>
+          {searching ? <IconSpinner size={16} /> : <IconSearch size={16} />}
+          {searching ? 'Searching…' : 'Search'}
+        </button>
+      </div>
+      {selectedCities.length > 0 && (
+        <div className="city-chips">
+          {selectedCities.map((code) => (
+            <button
+              key={code}
+              type="button"
+              className="city-chip"
+              title="Remove"
+              onClick={() => setSelectedCities((cs) => cs.filter((x) => x !== code))}
+            >
+              {cityNameOf(code)} <IconClose size={12} />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  )
 
   return (
     <div className="search-view">
-      {!criteria && (
-        <div className="hero">
-          <h2>
-            Find your <span className="grad">next stay</span>
-          </h2>
-          <p>Pick one or more destinations and dates — availability is fetched live from Hotelbeds.</p>
-        </div>
-      )}
-
-      <section className="panel search-card">
-        <div className="search-form">
-          <div className="field">
-            <label>
-              <IconGlobe size={14} /> Country
-            </label>
-            <select
-              value={country}
-              onChange={(e) => {
-                setCountry(e.target.value)
-                setSelectedCities([]) // cities belong to the previous country
-              }}
-            >
-              <option value="">Select a country…</option>
-              {countries.map((c) => (
-                <option key={c.countryCode} value={c.countryCode}>
-                  {c.name} ({c.countryCode})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <label>
-              <IconPin size={14} /> Cities
-            </label>
-            <select
-              value=""
-              disabled={!country}
-              onChange={(e) => {
-                const code = e.target.value
-                if (code) setSelectedCities((cs) => (cs.includes(code) ? cs : [...cs, code]))
-              }}
-            >
-              <option value="">
-                {country
-                  ? selectedCities.length
-                    ? 'Add another city…'
-                    : 'Select a city…'
-                  : 'Pick a country first'}
-              </option>
-              {cities
-                .filter((c) => !selectedCities.includes(c.cityCode))
-                .map((c) => (
-                  <option key={c.cityCode} value={c.cityCode}>
-                    {c.name} ({c.cityCode})
-                  </option>
-                ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <label>
-              <IconCalendar size={14} /> Check-in
-            </label>
-            <input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>
-              <IconCalendar size={14} /> Check-out
-            </label>
-            <input type="date" value={departure} min={arrival} onChange={(e) => setDeparture(e.target.value)} />
-          </div>
-
-          <div className="field">
-            <label>
-              <IconUsers size={14} /> Adults
-            </label>
-            <input type="number" min={1} max={8} value={adults} onChange={(e) => setAdults(+e.target.value)} />
-          </div>
-          <div className="field">
-            <label>
-              <IconUsers size={14} /> Children
-            </label>
-            <input type="number" min={0} max={6} value={children} onChange={(e) => setChildren(+e.target.value)} />
-          </div>
-
-          <button className="btn navy search-btn" disabled={!canSearch} onClick={doSearch}>
-            {searching ? <IconSpinner size={18} /> : <IconSearch size={18} />}
-            {searching ? 'Searching…' : 'Search'}
-          </button>
-        </div>
-        {selectedCities.length > 0 && (
-          <div className="city-chips">
-            {selectedCities.map((code) => (
-              <button
-                key={code}
-                type="button"
-                className="city-chip"
-                title="Remove"
-                onClick={() => setSelectedCities((cs) => cs.filter((x) => x !== code))}
-              >
-                {cityNameOf(code)} <IconClose size={12} />
+      {criteria ? (
+        <>
+          <div className="summary-bar">
+            <div className="summary-inner">
+              <strong>{criteria.cities.map(cityNameOf).join(', ')}</strong>
+              <span className="summary-item">
+                <IconCalendar size={15} /> {shortDate(criteria.arrival)} - {shortDate(criteria.departure)} (
+                {count(nightCount, 'night', 'nights')})
+              </span>
+              <span className="summary-item">
+                <IconUsers size={15} /> {guests}, 1 room
+              </span>
+              <button className="btn outline small" onClick={() => setEditing((e) => !e)} aria-expanded={editing}>
+                {editing ? 'Close' : 'Modify search'}
               </button>
-            ))}
+            </div>
           </div>
-        )}
-      </section>
-
-      {searching && (
-        <section className="results">
-          <div className="hotel-list">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div className="hotel-row skeleton-row" key={i}>
-                <div className="sk sk-photo" />
-                <div className="hotel-main">
-                  <div className="sk sk-line lg" />
-                  <div className="sk sk-line w40" />
-                  <div className="sk sk-line w60" />
-                </div>
-                <div className="hotel-side">
-                  <div className="sk sk-line w60" />
-                  <div className="sk sk-btn" />
-                </div>
-              </div>
-            ))}
+          {editing && <div className="summary-edit">{searchForm}</div>}
+        </>
+      ) : (
+        <section className="search-band">
+          <div className="hero">
+            <h2>Find your next stay</h2>
+            <p>Pick one or more destinations and dates — availability is fetched live from Hotelbeds.</p>
           </div>
+          {searchForm}
         </section>
       )}
 
-      {error && !searching && <div className="alert error">{error}</div>}
-
-      {results && criteria && !searching && (
-        <section className="results results-layout" ref={resultsRef}>
-          <aside className="filters">
-            <h3>Filter by</h3>
-            {options.stars.length > 0 && (
-              <div className="filter-group" role="group" aria-label="Property rating">
-                <h4>Property rating</h4>
-                {options.stars.map(({ value, count: n }) => (
-                  <label key={value} className="check">
-                    <input
-                      type="checkbox"
-                      checked={view.stars.includes(value)}
-                      onChange={() => updateView({ stars: toggle(view.stars, value) })}
-                    />
-                    <span>{count(value, 'star', 'stars')}</span>
-                    <span className="count">{n}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-            {options.meals.length > 0 && (
-              <div className="filter-group" role="group" aria-label="Meals">
-                <h4>Meals</h4>
-                {options.meals.map(({ value, count: n }) => (
-                  <label key={value} className="check">
-                    <input
-                      type="checkbox"
-                      checked={view.meals.includes(value)}
-                      onChange={() => updateView({ meals: toggle(view.meals, value) })}
-                    />
-                    <span>{tidy(value)}</span>
-                    <span className="count">{n}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-            {filtered && (
-              <button className="link-btn" onClick={() => updateView({ stars: [], meals: [] })}>
-                Clear filters
-              </button>
-            )}
-          </aside>
-
-          <div className="results-main">
-            <div className="results-head">
-              <div>
-                <h2>
-                  {criteria.cities.map(cityNameOf).join(', ')}: {count(totalHotels, 'property', 'properties')} found
-                </h2>
-                <div className="muted results-sub">
-                  {shortDate(criteria.arrival)} – {shortDate(criteria.departure)} · {stay}
-                  {filtered && ` · filtered from ${results.hotels.length}`}
+      {(criteria || error) && (
+        <div className="page">
+          {searching && (
+            <div className="hotel-list">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div className="hotel-row skeleton-row" key={i}>
+                  <div className="sk sk-photo" />
+                  <div className="hotel-main">
+                    <div className="sk sk-line lg" />
+                    <div className="sk sk-line w40" />
+                    <div className="sk sk-line w60" />
+                  </div>
+                  <div className="hotel-side">
+                    <div className="sk sk-line w60" />
+                    <div className="sk sk-btn" />
+                  </div>
                 </div>
-              </div>
-              <label className="sort">
-                <span>Sort by</span>
-                <select value={view.sort} onChange={(e) => updateView({ sort: e.target.value as SortKey })}>
-                  {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
-                    <option key={k} value={k}>
-                      {SORT_LABEL[k]}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              ))}
             </div>
+          )}
 
-            {stale && (
-              <div className="alert" style={{ alignItems: 'center', gap: 12 }}>
-                <span>
-                  Prices from {new Date(resultsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} —
-                  availability may have changed.
-                </span>
-                <button className="btn small" onClick={() => loadResults(criteria, true)}>
-                  Refresh prices
-                </button>
-              </div>
-            )}
+          {error && !searching && <div className="alert error">{error}</div>}
 
-            {failed.map((s) => (
-              <div className="alert error" key={s.provider}>
-                {PROVIDER_LABEL[s.provider]}: {s.error ?? 'search failed'}
-              </div>
-            ))}
-
-            {rows.length === 0 ? (
-              <div className="empty">
-                {results.hotels.length
-                  ? 'No properties match these filters.'
-                  : 'No availability for these dates. Try a different range.'}
-              </div>
-            ) : (
-              <>
-                <div className="hotel-list">
-                  {pageRows.map(({ hotel: h, room, price }, idx) => {
-                    const stars = starsOf(h)
-                    const photo = h.image ?? covers[coverKey(h)]
-                    const more = h.roomDetails.length - 1
-                    return (
-                      <article
-                        className="hotel-row"
-                        key={`${h.provider}:${h.id}`}
-                        style={{ animationDelay: `${idx * 40}ms` }}
-                      >
-                        <button
-                          type="button"
-                          className="hotel-photo"
-                          // The gradient sits under the photo, so a missing/broken image still looks intentional.
-                          style={{ backgroundImage: photo ? `url("${photo}"), ${bannerFor(h.name)}` : bannerFor(h.name) }}
-                          onClick={() => openDetail(h)}
-                          aria-label={`Photos and details of ${h.name}`}
-                        >
-                          {!photo && <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>}
-                        </button>
-
-                        <div className="hotel-main">
-                          <h3>
-                            <button type="button" className="hotel-name" onClick={() => openDetail(h)}>
-                              {h.name.trim()}
-                            </button>
-                            {stars > 0 && (
-                              <span className="stars" aria-label={count(stars, 'star', 'stars')}>
-                                {Array.from({ length: stars }).map((_, i) => (
-                                  <IconStar key={i} size={13} />
-                                ))}
-                              </span>
-                            )}
-                          </h3>
-                          <div className="hotel-loc">
-                            <IconPin size={13} /> {cityNameOf(h.city)}
-                          </div>
-                          <div className="offer">
-                            <strong>{tidy(room.type)}</strong>
-                            {room.boardBasis && <span className="board">{tidy(room.boardBasis)}</span>}
-                            {more > 0 && <span className="muted">+{count(more, 'more room option', 'more room options')}</span>}
-                          </div>
-                        </div>
-
-                        <div className="hotel-side">
-                          <span className="muted stay">{stay}</span>
-                          <span className="price">{wholeMoney(price, h.currency)}</span>
-                          <button className="btn primary" onClick={() => openDetail(h)}>
-                            See availability
-                          </button>
-                        </div>
-                      </article>
-                    )
-                  })}
+          {results && criteria && !searching && (
+            <section className="results results-layout" ref={resultsRef}>
+              <aside className="filters">
+                <div className="filter-group">
+                  <h4>Hotel name</h4>
+                  <input
+                    type="search"
+                    placeholder="Hotel name"
+                    value={view.name}
+                    onChange={(e) => updateView({ name: e.target.value })}
+                  />
                 </div>
-                {pageCount > 1 && (
-                  <div className="pager">
-                    <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
-                      ‹ Prev
-                    </button>
-                    <span className="muted">
-                      Page {safePage + 1} of {pageCount}
+                {options.meals.length > 0 && (
+                  <div className="filter-group" role="group" aria-label="Board">
+                    <h4>Board</h4>
+                    {options.meals.map(({ value, count: n }) => (
+                      <label key={value} className="check">
+                        <input
+                          type="checkbox"
+                          checked={view.meals.includes(value)}
+                          onChange={() => updateView({ meals: toggle(view.meals, value) })}
+                        />
+                        <span>{tidy(value)}</span>
+                        <span className="count">{n}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <div className="filter-group" role="group" aria-label="Category">
+                  <h4>Category</h4>
+                  <div className="star-toggles">
+                    {options.stars.map(({ value, count: n }) => {
+                      const on = view.stars.includes(value)
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          className={`star-toggle ${on ? 'on' : ''}`}
+                          aria-pressed={on}
+                          disabled={n === 0 && !on}
+                          title={`${count(value, 'star', 'stars')}: ${count(n, 'hotel', 'hotels')}`}
+                          onClick={() => updateView({ stars: toggle(view.stars, value) })}
+                        >
+                          {value} <IconStar size={12} />
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                {filtered && (
+                  <button className="link-btn" onClick={() => updateView({ name: '', stars: [], meals: [] })}>
+                    Clear filters
+                  </button>
+                )}
+              </aside>
+
+              <div className="results-main">
+                <div className="results-head">
+                  <h2>
+                    {count(totalHotels, 'Hotel', 'Hotels')}
+                    {filtered && <span className="muted results-sub"> of {results.hotels.length}</span>}
+                  </h2>
+                  <label className="sort">
+                    <span>Sort by</span>
+                    <select value={view.sort} onChange={(e) => updateView({ sort: e.target.value as SortKey })}>
+                      {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
+                        <option key={k} value={k}>
+                          {SORT_LABEL[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                {stale && (
+                  <div className="alert" style={{ alignItems: 'center', gap: 12 }}>
+                    <span>
+                      Prices from{' '}
+                      {new Date(resultsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} —
+                      availability may have changed.
                     </span>
-                    <button className="btn" disabled={safePage >= pageCount - 1} onClick={() => goToPage(safePage + 1)}>
-                      Next ›
+                    <button className="btn small" onClick={() => loadResults(criteria, true)}>
+                      Refresh prices
                     </button>
                   </div>
                 )}
-              </>
-            )}
-          </div>
-        </section>
+
+                {failed.map((s) => (
+                  <div className="alert error" key={s.provider}>
+                    {PROVIDER_LABEL[s.provider]}: {s.error ?? 'search failed'}
+                  </div>
+                ))}
+
+                {rows.length === 0 ? (
+                  <div className="empty">
+                    {results.hotels.length
+                      ? 'No hotels match these filters.'
+                      : 'No availability for these dates. Try a different range.'}
+                  </div>
+                ) : (
+                  <>
+                    <div className="hotel-list">
+                      {pageRows.map(({ hotel: h, room, price }, idx) => {
+                        const stars = starsOf(h)
+                        const photo = h.image ?? covers[coverKey(h)]
+                        const open = openRooms.has(coverKey(h))
+                        const boards = [...new Set(h.roomDetails.map((r) => r.boardBasis).filter(Boolean))]
+                        const shownRooms = view.meals.length
+                          ? h.roomDetails.filter((r) => view.meals.includes(r.boardBasis))
+                          : h.roomDetails
+                        return (
+                          <div
+                            className={`hotel-item ${open ? 'open' : ''}`}
+                            key={coverKey(h)}
+                            style={{ animationDelay: `${idx * 30}ms` }}
+                          >
+                            <article className="hotel-row">
+                              <button
+                                type="button"
+                                className="hotel-photo"
+                                style={{
+                                  backgroundImage: photo ? `url("${photo}"), ${bannerFor(h.name)}` : bannerFor(h.name),
+                                }}
+                                onClick={() => openDetail(h)}
+                                aria-label={`Photos and details of ${h.name}`}
+                              >
+                                {!photo && <span className="initial">{h.name.trim().charAt(0).toUpperCase()}</span>}
+                              </button>
+
+                              <div className="hotel-main">
+                                <h3>
+                                  <button type="button" className="hotel-name" onClick={() => openDetail(h)}>
+                                    {h.name.trim()}
+                                  </button>
+                                  {stars > 0 && (
+                                    <span className="stars" aria-label={count(stars, 'star', 'stars')}>
+                                      {Array.from({ length: stars }).map((_, i) => (
+                                        <IconStar key={i} size={15} />
+                                      ))}
+                                    </span>
+                                  )}
+                                </h3>
+                                <div className="hotel-loc">
+                                  <IconPin size={14} /> {cityNameOf(h.city)}
+                                </div>
+                                {boards.length > 0 && (
+                                  <div className="tags">
+                                    {boards.slice(0, 3).map((b) => (
+                                      <span className="tag" key={b}>
+                                        {tidy(b)}
+                                      </span>
+                                    ))}
+                                    {boards.length > 3 && <span className="tag">+{boards.length - 3}</span>}
+                                  </div>
+                                )}
+                                <span className="room-count">
+                                  {count(h.roomDetails.length, 'room option', 'room options')}
+                                </span>
+                              </div>
+
+                              <div className="hotel-side">
+                                <div className="side-offer">
+                                  <span className="room" title={tidy(room.type)}>
+                                    1 x {tidy(room.type)}
+                                  </span>
+                                  <span className="price">{money(price, h.currency)}</span>
+                                  <span className="muted stay">{stay}</span>
+                                </div>
+                                <button
+                                  className={`btn ${open ? 'soft' : 'navy'}`}
+                                  aria-expanded={open}
+                                  onClick={() => toggleRooms(h)}
+                                >
+                                  {open ? 'Hide rooms' : 'View rooms'}
+                                  {open ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
+                                </button>
+                              </div>
+                            </article>
+
+                            {open && (
+                              <div className="rooms-panel">
+                                <RoomRates
+                                  rooms={shownRooms}
+                                  currency={h.currency}
+                                  onBook={(r) => setBooking({ hotel: h, room: r, ctx: ctxFor(h, criteria) })}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {pageCount > 1 && (
+                      <div className="pager">
+                        <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
+                          ‹ Prev
+                        </button>
+                        <span className="muted">
+                          Page {safePage + 1} of {pageCount}
+                        </span>
+                        <button
+                          className="btn"
+                          disabled={safePage >= pageCount - 1}
+                          onClick={() => goToPage(safePage + 1)}
+                        >
+                          Next ›
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+        </div>
       )}
 
       {booking && (

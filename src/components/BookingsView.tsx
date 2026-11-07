@@ -53,7 +53,7 @@ export default function BookingsView() {
   }
 
   return (
-    <div className="bookings-view">
+    <div className="bookings-view page">
       <div className="hero">
         <h2>
           My <span className="grad">bookings</span>
