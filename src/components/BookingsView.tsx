@@ -21,7 +21,7 @@ export default function BookingsView() {
   const today = localToday()
 
   // Reads each booking made in this browser. One the backend no longer knows (404, e.g. after a
-  // database reset) is forgotten; any other failure is shown without dropping the rest.
+  // database reset) is forgotten; the others that fail are counted and shown, and the rest still load.
   function load() {
     setLoading(true)
     setError(null)
@@ -29,14 +29,19 @@ export default function BookingsView() {
     Promise.allSettled(ids.map((id) => api.booking(id)))
       .then((results) => {
         const found: BookingView[] = []
-        let failure: string | null = null
+        const failures: string[] = []
         results.forEach((r, i) => {
           if (r.status === 'fulfilled') found.push(r.value)
           else if (r.reason instanceof ApiError && r.reason.status === 404) forgetBooking(ids[i])
-          else failure = r.reason instanceof ApiError ? r.reason.message : String(r.reason)
+          else failures.push(r.reason instanceof ApiError ? r.reason.message : String(r.reason))
         })
         setBookings(found)
-        setError(failure)
+        setError(
+          failures.length === 0
+            ? null
+            : `${failures.length} ${failures.length === 1 ? 'booking' : 'bookings'} couldn't be loaded: ` +
+                [...new Set(failures)].join('; '),
+        )
       })
       .finally(() => setLoading(false))
   }
@@ -76,7 +81,7 @@ export default function BookingsView() {
       {error && <div className="alert error">{error}</div>}
 
       {bookings.length === 0 ? (
-        <div className="empty">No bookings yet — search for a hotel and book one.</div>
+        !error && <div className="empty">No bookings yet — search for a hotel and book one.</div>
       ) : (
         <table className="bookings-table">
           <thead>
