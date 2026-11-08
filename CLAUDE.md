@@ -26,7 +26,8 @@ React 18 · TypeScript · Vite 5 · Node 24.
 - `api.ts` — typed `fetch` client (throws `ApiError`; reads Spring `ProblemDetail.detail`).
 - `types.ts` — API response/request types.
 - `App.tsx` — shell: Search / My bookings tabs + light/dark theme toggle (persists to `localStorage`, light default).
-- `components/` — `SearchView` (country→city→dates/guests + star-rating chips → results), `BookHotelDialog` (prebook → guest form → book), `HotelDetailDialog` (static images/amenities), `BookingsView` (list + cancel).
+- `components/` — `SearchView` (country→city→dates/guests + star-rating chips → results), `BookHotelDialog` (prebook → guest form → book), `HotelDetailDialog` (static images/amenities), `BookingsView` (the bookings made in this browser + cancel).
+- `myBookings.ts` — remembers the references of bookings made in this browser (`localStorage`). The backend's full booking list is staff-only (SEC-1), so "My bookings" reads each remembered booking by reference instead; SEC-2 swaps the reference for an opaque id plus manage token.
 - `icons.tsx` — inline-SVG icons (no icon dependency).
 - `styles.css` — bright **magenta-on-mint** theme (Hotelbeds-inspired), light + dark via `[data-theme]`.
 
