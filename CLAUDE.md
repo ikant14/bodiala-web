@@ -3,6 +3,8 @@
 React frontend for the **bodiala** RezLive API. Part of a 3-repo project — see the master guide at
 `../bodiala/CLAUDE.md` for the backend, stub, run flow, and architecture.
 
+> **Working alongside other agents?** Follow `../bodiala/AGENTS.md`. It covers Jira tasks, worktrees and branches, and per-agent ports. In a slot, run Vite with `VITE_API_TARGET=http://localhost:<slot api port>` and `npm.cmd run dev -- --port <slot web port> --strictPort`.
+
 ## Stack & run
 
 React 18 · TypeScript · Vite 5 · Node 24.
