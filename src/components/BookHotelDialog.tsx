@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { ApiError, api } from '../api'
 import type { BookingView, FoundHotel, PreBookingResponse, Provider, RoomDetail, RoomOffer } from '../types'
 import { IconCheck, IconClose, IconSpinner } from '../icons'
@@ -71,6 +71,7 @@ export default function BookHotelDialog({
   const [salutation, setSalutation] = useState('Mr')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const fid = useId() // prefix for the ids that tie each label to its control
 
   const offer = offerFrom(room ?? hotel.roomDetails[0])
 
@@ -216,16 +217,43 @@ export default function BookHotelDialog({
                 </details>
               )}
 
-              <div className="guest-form">
-                <h4>Lead guest</h4>
+              <div className="guest-form" role="group" aria-labelledby={`${fid}-guest`}>
+                <h4 id={`${fid}-guest`}>Lead guest</h4>
                 <div className="guest-fields">
-                  <select value={salutation} onChange={(e) => setSalutation(e.target.value)}>
-                    <option>Mr</option>
-                    <option>Mrs</option>
-                    <option>Ms</option>
-                  </select>
-                  <input placeholder="First name" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-                  <input placeholder="Last name" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                  <div className="field">
+                    <label htmlFor={`${fid}-title`}>Title</label>
+                    <select
+                      id={`${fid}-title`}
+                      name="honorific-prefix"
+                      autoComplete="honorific-prefix"
+                      value={salutation}
+                      onChange={(e) => setSalutation(e.target.value)}
+                    >
+                      <option>Mr</option>
+                      <option>Mrs</option>
+                      <option>Ms</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`${fid}-first`}>First name</label>
+                    <input
+                      id={`${fid}-first`}
+                      name="given-name"
+                      autoComplete="given-name"
+                      value={firstName}
+                      onChange={(e) => setFirstName(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`${fid}-last`}>Last name</label>
+                    <input
+                      id={`${fid}-last`}
+                      name="family-name"
+                      autoComplete="family-name"
+                      value={lastName}
+                      onChange={(e) => setLastName(e.target.value)}
+                    />
+                  </div>
                 </div>
               </div>
 

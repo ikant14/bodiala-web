@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api'
 import type { City, CombinedSearchResult, Country, FoundHotel, Provider, RoomDetail } from '../types'
@@ -165,6 +165,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
   const resultsRef = useRef<HTMLDivElement>(null)
   const searchSeq = useRef(0) // ignores a response once a newer search has started
   const freshNext = useRef(false) // the next URL-driven load is a user search: skip saved results
+  const fid = useId() // prefix for the ids that tie each label to its control
 
   useEffect(() => {
     api.countries()
@@ -366,10 +367,11 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
     <section className="panel search-card">
       <div className="search-form">
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-country`}>
             <IconGlobe size={14} /> Country
           </label>
           <select
+            id={`${fid}-country`}
             value={country}
             onChange={(e) => {
               setCountry(e.target.value)
@@ -386,10 +388,11 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         </div>
 
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-city`}>
             <IconPin size={14} /> Where are you going?
           </label>
           <select
+            id={`${fid}-city`}
             value=""
             disabled={!country}
             onChange={(e) => {
@@ -411,29 +414,49 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         </div>
 
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-arrival`}>
             <IconCalendar size={14} /> Check-in
           </label>
-          <input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
+          <input id={`${fid}-arrival`} type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
         </div>
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-departure`}>
             <IconCalendar size={14} /> Check-out
           </label>
-          <input type="date" value={departure} min={arrival} onChange={(e) => setDeparture(e.target.value)} />
+          <input
+            id={`${fid}-departure`}
+            type="date"
+            value={departure}
+            min={arrival}
+            onChange={(e) => setDeparture(e.target.value)}
+          />
         </div>
 
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-adults`}>
             <IconUsers size={14} /> Adults
           </label>
-          <input type="number" min={1} max={8} value={adults} onChange={(e) => setAdults(+e.target.value)} />
+          <input
+            id={`${fid}-adults`}
+            type="number"
+            min={1}
+            max={8}
+            value={adults}
+            onChange={(e) => setAdults(+e.target.value)}
+          />
         </div>
         <div className="field">
-          <label>
+          <label htmlFor={`${fid}-children`}>
             <IconUsers size={14} /> Children
           </label>
-          <input type="number" min={0} max={6} value={children} onChange={(e) => setChildren(+e.target.value)} />
+          <input
+            id={`${fid}-children`}
+            type="number"
+            min={0}
+            max={6}
+            value={children}
+            onChange={(e) => setChildren(+e.target.value)}
+          />
         </div>
 
         <button className="btn primary search-btn" disabled={!canSearch} onClick={doSearch}>
@@ -442,13 +465,14 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
         </button>
       </div>
       {selectedCities.length > 0 && (
-        <div className="city-chips">
+        <div className="city-chips" role="group" aria-label="Selected destinations">
           {selectedCities.map((code) => (
             <button
               key={code}
               type="button"
               className="city-chip"
-              title="Remove"
+              aria-label={`Remove ${cityNameOf(code)}`}
+              title={`Remove ${cityNameOf(code)}`}
               onClick={() => setSelectedCities((cs) => cs.filter((x) => x !== code))}
             >
               {cityNameOf(code)} <IconClose size={12} />
@@ -517,10 +541,13 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
             <section className="results results-layout" ref={resultsRef}>
               <aside className="filters">
                 <div className="filter-group">
-                  <h4>Hotel name</h4>
+                  <h4>
+                    <label htmlFor={`${fid}-name`}>Hotel name</label>
+                  </h4>
                   <input
+                    id={`${fid}-name`}
                     type="search"
-                    placeholder="Hotel name"
+                    autoComplete="off"
                     value={view.name}
                     onChange={(e) => updateView({ name: e.target.value })}
                   />
@@ -533,6 +560,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                         <input
                           type="checkbox"
                           checked={view.meals.includes(value)}
+                          aria-label={`${tidy(value)}, ${count(n, 'hotel', 'hotels')}`}
                           onChange={() => updateView({ meals: toggle(view.meals, value) })}
                         />
                         <span>{tidy(value)}</span>
@@ -553,6 +581,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                           className={`star-toggle ${on ? 'on' : ''}`}
                           aria-pressed={on}
                           disabled={n === 0 && !on}
+                          aria-label={`${count(value, 'star', 'stars')}, ${count(n, 'hotel', 'hotels')}`}
                           title={`${count(value, 'star', 'stars')}: ${count(n, 'hotel', 'hotels')}`}
                           onClick={() => updateView({ stars: toggle(view.stars, value) })}
                         >
@@ -648,7 +677,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                                     {h.name.trim()}
                                   </button>
                                   {stars > 0 && (
-                                    <span className="stars" aria-label={count(stars, 'star', 'stars')}>
+                                    <span className="stars" role="img" aria-label={count(stars, 'star', 'stars')}>
                                       {Array.from({ length: stars }).map((_, i) => (
                                         <IconStar key={i} size={15} />
                                       ))}
@@ -708,7 +737,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                     {pageCount > 1 && (
                       <div className="pager">
                         <button className="btn" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>
-                          ‹ Prev
+                          <span aria-hidden="true">‹</span> Prev
                         </button>
                         <span className="muted">
                           Page {safePage + 1} of {pageCount}
@@ -718,7 +747,7 @@ export default function SearchView({ onBooked }: { onBooked: () => void }) {
                           disabled={safePage >= pageCount - 1}
                           onClick={() => goToPage(safePage + 1)}
                         >
-                          Next ›
+                          Next <span aria-hidden="true">›</span>
                         </button>
                       </div>
                     )}

@@ -3,6 +3,7 @@ import { ApiError, api } from '../api'
 import type { HotelView, Provider, RoomDetail } from '../types'
 import { IconClose, IconPin, IconSpinner, IconStar } from '../icons'
 import RoomRates from './RoomRates'
+import { count } from '../format'
 
 /** The bookable offers for this hotel from the current search, shown as the availability list. */
 export interface RoomOffers {
@@ -106,7 +107,7 @@ export default function HotelDetailDialog({
 
               <div className="detail-meta">
                 {rating > 0 && (
-                  <span className="stars">
+                  <span className="stars" role="img" aria-label={count(rating, 'star', 'stars')}>
                     {Array.from({ length: rating }).map((_, i) => (
                       <IconStar key={i} size={14} />
                     ))}

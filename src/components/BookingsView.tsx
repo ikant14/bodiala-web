@@ -74,7 +74,9 @@ export default function BookingsView() {
               <th>Stay</th>
               <th>Price</th>
               <th>Status</th>
-              <th aria-label="Actions"></th>
+              <th>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -105,7 +107,13 @@ export default function BookingsView() {
                         disabled={cancelling === b.bookingId}
                         onClick={() => cancel(b.bookingId)}
                       >
-                        {cancelling === b.bookingId ? 'Cancelling…' : 'Cancel'}
+                        {cancelling === b.bookingId ? (
+                          'Cancelling…'
+                        ) : (
+                          <>
+                            Cancel<span className="sr-only"> booking {b.bookingId}</span>
+                          </>
+                        )}
                       </button>
                     )}
                   </td>
