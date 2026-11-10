@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ApiError, api } from '../api'
 import type { BookingView } from '../types'
 import { IconSpinner } from '../icons'
+import { forgetBooking, rememberedBookings } from '../myBookings'
 
 /** Today's local date as yyyy-MM-dd, comparable with the bookings' arrival dates. */
 function localToday(): string {
@@ -19,13 +20,29 @@ export default function BookingsView() {
   const [cancelling, setCancelling] = useState<string | null>(null)
   const today = localToday()
 
+  // Reads each booking made in this browser. One the backend no longer knows (404, e.g. after a
+  // database reset) is forgotten; the others that fail are counted and shown, and the rest still load.
   function load() {
     setLoading(true)
     setError(null)
-    api
-      .listBookings()
-      .then(setBookings)
-      .catch((e: ApiError) => setError(e.message))
+    const ids = rememberedBookings()
+    Promise.allSettled(ids.map((id) => api.booking(id)))
+      .then((results) => {
+        const found: BookingView[] = []
+        const failures: string[] = []
+        results.forEach((r, i) => {
+          if (r.status === 'fulfilled') found.push(r.value)
+          else if (r.reason instanceof ApiError && r.reason.status === 404) forgetBooking(ids[i])
+          else failures.push(r.reason instanceof ApiError ? r.reason.message : String(r.reason))
+        })
+        setBookings(found)
+        setError(
+          failures.length === 0
+            ? null
+            : `${failures.length} ${failures.length === 1 ? 'booking' : 'bookings'} couldn't be loaded: ` +
+                [...new Set(failures)].join('; '),
+        )
+      })
       .finally(() => setLoading(false))
   }
 
@@ -58,13 +75,13 @@ export default function BookingsView() {
         <h2>
           My <span className="grad">bookings</span>
         </h2>
-        <p>Everything you've booked through the demo, with live cancellation.</p>
+        <p>The bookings made in this browser, with live cancellation.</p>
       </div>
 
       {error && <div className="alert error">{error}</div>}
 
       {bookings.length === 0 ? (
-        <div className="empty">No bookings yet — search for a hotel and book one.</div>
+        !error && <div className="empty">No bookings yet — search for a hotel and book one.</div>
       ) : (
         <table className="bookings-table">
           <thead>

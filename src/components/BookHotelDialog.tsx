@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { ApiError, api } from '../api'
 import type { BookingView, FoundHotel, PreBookingResponse, Provider, RoomDetail, RoomOffer } from '../types'
 import { IconCheck, IconClose, IconSpinner } from '../icons'
+import { rememberBooking } from '../myBookings'
 
 export interface SearchContext {
   provider: Provider
@@ -132,6 +133,7 @@ export default function BookHotelDialog({
         },
         ctx.provider,
       )
+      rememberBooking(view.bookingId)
       setConfirmed(view)
       setPhase('done')
     } catch (e) {

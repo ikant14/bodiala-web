@@ -103,7 +103,8 @@ export const api = {
       body: JSON.stringify(r),
     }),
 
-  listBookings: () => get<BookingView[]>('/api/bookings'),
+  // One stored booking by its reference. (The list of every booking is staff-only.)
+  booking: (bookingId: string) => get<BookingView>(`/api/bookings/${q(bookingId)}`),
 
   cancel: (bookingId: string) =>
     request<CancellationResponse>(`/api/bookings/${q(bookingId)}/cancel`, { method: 'POST' }),
